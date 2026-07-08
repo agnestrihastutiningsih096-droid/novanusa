@@ -1,0 +1,49 @@
+{
+  "lpse_name": "Kementerian Koordinator Bidang Pembangunan Manusia dan Kebudayaan",
+  "lpse_url": "https://spse.inaproc.id/kemenkeu",
+  "base_url": "https://spse.inaproc.id/kemenkeu",
+  "slug": "kemenkeu",
+  "source_type": "nontender",
+  "package_code": "10550656000",
+  "package_name": "Pengadaan Perpanjangan Lisensi Software Digital Forensics 2026",
+  "year": 2026,
+  "collected_at": "2026-07-06T00:57:22+00:00",
+  "detail_url": "https://spse.inaproc.id/kemenkeu/nontender/10550656000/pengumumanpl",
+  "source_list_url": "https://spse.inaproc.id/kemenkeu/nontender?tahun=2026",
+  "source_datatable_url": "https://spse.inaproc.id/kemenkeu/dt/pl?tahun=2026",
+  "evidence_level": "LPSE_PUBLIC_DETAIL_FOUND",
+  "detail_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 15689,
+    "elapsed_seconds": 0.229,
+    "sha256": "6c38f134c55be583ed8f756bd4191da48e40d1c98429a508988f7cd663d2d8df"
+  },
+  "schedule_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 9101,
+    "elapsed_seconds": 0.139,
+    "sha256": "56126c313ddf903457bf827ffb3d7bfb2d510294201893fbe852f62746ffd289"
+  },
+  "participants_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 9020,
+    "elapsed_seconds": 0.299,
+    "sha256": "91f482bb8b7ba67d55c716bb66718fdb9e5cbe374dbdfe14ce02fc93f544e80e"
+  },
+  "winner_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 10774,
+    "elapsed_seconds": 0.127,
+    "sha256": "2bbcad697af26f971e547efd4131ccd857ab685e0dd5ce2bfac2cb05bf194aea"
+  },
+  "document_links": [],
+  "final_evidence_level": "LPSE_PUBLIC_DETAIL_FOUND"
+}

@@ -1,0 +1,86 @@
+{
+  "693520-sekretariat-jenderal-kementerian-kehutanan-z5z14r": {
+    "draft": {
+      "text": "Yth. Bapak/Ibu Tim Pengadaan 693520 SEKRETARIAT JENDERAL KEMENTERIAN KEHUTANAN — Kementerian Kehutanan,\n\nBerdasarkan informasi rencana pengadaan yang dipublikasikan secara resmi melalui SiRUP, kami mencatat adanya indikasi area kebutuhan pada kategori CAMERA_VIDEO, IT_HARDWARE, LAPTOP, OFFICE_FURNITURE, PRINTER. Ringkasan awal ini berasal dari 8 paket rencana dengan total pagu Rp 604.650.000.\n\nSebagai referensi awal, contoh nama paket yang tercatat antara lain: Lensa Kamera [67204167]; SEWA LAPTOP BIRO KEUANGAN [67173990]; Sewa peralatan elektronik Satuan Pelaksana UKPBJ (Laptop (30 Unit)) [67132421].\n\nApabila berkenan, kami dapat menyampaikan referensi produk atau klarifikasi awal yang relevan dengan kategori tersebut untuk membantu proses penelaahan internal Bapak/Ibu.\n\nCatatan: informasi SiRUP merupakan informasi perencanaan pengadaan. Draft ini tidak menyimpulkan status tender, ketersediaan anggaran final, atau keputusan pengadaan.\n\nHormat kami,\nTim NovaNusa",
+      "status": "READY_TO_SEND",
+      "reviewStatus": "Ready to Send",
+      "approved": true,
+      "readyToSend": true,
+      "sent": false,
+      "updatedAt": "2026-07-08T08:14:29.455Z"
+    },
+    "salesNotes": {
+      "contactPerson": "",
+      "conversationNotes": "",
+      "customerInterest": "",
+      "requestedDocuments": "",
+      "internalNotes": "",
+      "savedAt": null
+    },
+    "nextAction": {
+      "action": "Call Again",
+      "note": "",
+      "savedAt": null
+    },
+    "timeline": {
+      "completedEvents": [
+        "EMAIL_SENT"
+      ],
+      "eventTimestamps": {
+        "EMAIL_SENT": "2026-07-08T03:05:01.227Z"
+      },
+      "currentStage": "Email Sent",
+      "updatedAt": "2026-07-08T03:05:01.227Z"
+    },
+    "emailSend": {
+      "sentAt": "2026-07-08T03:05:01.227Z",
+      "mode": "mock",
+      "intendedRecipient": "setjen@menlhk.go.id",
+      "actualRecipient": "mock:no-real-recipient",
+      "subject": "Informasi Rekomendasi Produk Berdasarkan Rencana Pengadaan SiRUP",
+      "status": "sent",
+      "providerMessageId": "mock-1783479901227",
+      "error": null
+    }
+  },
+  "693974-pelaksanaan-cipta-karya-wilayah-iii-provinsi-sumatera-utara-6120x2": {
+    "draft": {
+      "text": "Yth. Bapak/Ibu Tim Pengadaan 693974/PELAKSANAAN CIPTA KARYA WILAYAH III PROVINSI SUMATERA UTARA — Kementerian Pekerjaan Umum,\n\nBerdasarkan informasi rencana pengadaan yang dipublikasikan secara resmi melalui SiRUP, kami mencatat adanya indikasi area kebutuhan pada kategori IT_HARDWARE. Ringkasan awal ini berasal dari 3 paket rencana dengan total pagu Rp 44.320.000.\n\nSebagai referensi awal, contoh nama paket yang tercatat antara lain: ATK dan Komputer Supplies [67079076]; ATK dan Komputer Supplies [67079075]; ATK dan Komputer Supplies [67068771].\n\nApabila berkenan, kami dapat menyampaikan referensi produk atau klarifikasi awal yang relevan dengan kategori tersebut untuk membantu proses penelaahan internal Bapak/Ibu.\n\nCatatan: informasi SiRUP merupakan informasi perencanaan pengadaan. Draft ini tidak menyimpulkan status tender, ketersediaan anggaran final, atau keputusan pengadaan.\n\nHormat kami,\nTim NovaNusa",
+      "status": "READY_TO_SEND",
+      "reviewStatus": "Ready to Send",
+      "approved": true,
+      "readyToSend": true,
+      "sent": false,
+      "updatedAt": "2026-07-08T08:18:34.326Z"
+    },
+    "salesNotes": {
+      "contactPerson": "",
+      "conversationNotes": "",
+      "customerInterest": "",
+      "requestedDocuments": "",
+      "internalNotes": "",
+      "savedAt": null
+    },
+    "nextAction": {
+      "action": "Call Again",
+      "note": "",
+      "savedAt": null
+    },
+    "timeline": {
+      "completedEvents": [],
+      "eventTimestamps": {},
+      "currentStage": "No CRM event yet",
+      "updatedAt": null
+    },
+    "emailSend": {
+      "sentAt": null,
+      "mode": null,
+      "intendedRecipient": "",
+      "actualRecipient": "",
+      "subject": "",
+      "status": "not_sent",
+      "providerMessageId": null,
+      "error": null
+    }
+  }
+}

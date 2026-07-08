@@ -1,0 +1,32 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.log
+.env
+.env.*
+node_modules/
+dist/
+build/
+coverage/
+.vscode/
+.idea/
+*.sqlite3
+*.db
+*.duckdb-wal
+*.tmp
+Thumbs.db
+.DS_Store
+
+# Raw crawled evidence / downloaded HTML
+data/reference/lpse/raw/
+
+# Raw crawled evidence / downloaded HTML
+data/reference/lpse/raw/
+
+# Local env files
+.env.local
+.env*
+
+# Raw crawled evidence / downloaded HTML
+data/reference/lpse/raw/
+

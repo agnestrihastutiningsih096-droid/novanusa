@@ -1,0 +1,42 @@
+﻿<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NovaNusa Dashboard</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">NovaNusa</div>
+    <nav>
+      <button class="nav active" data-page="home">Home</button>
+      <button class="nav" data-page="opportunities">Opportunities</button>
+      <button class="nav" data-page="institutions">Institutions</button>
+      <button class="nav" data-page="needs">Needs</button>
+      <button class="nav" data-page="principals">Principals</button>
+      <button class="nav" data-page="products">Products</button>
+      <button class="nav" data-page="outreach">Outreach</button>
+      <button class="nav" data-page="ai">AI Intelligence</button>
+      <button class="nav" data-page="analytics">Analytics</button>
+      <button class="nav" data-page="knowledge">Knowledge</button>
+      <button class="nav" data-page="admin">Administration</button>
+      <button class="nav" data-page="settings">Settings</button>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Home</h1>
+        <p id="page-subtitle">Enterprise Procurement Intelligence Dashboard</p>
+      </div>
+      <input class="search" placeholder="Search institution, need, principal..." />
+    </header>
+
+    <section id="content"></section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

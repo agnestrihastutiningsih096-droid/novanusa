@@ -1,0 +1,52 @@
+{
+  "generated_at": "2026-07-05T20:55:34+00:00",
+  "year": 2026,
+  "sirup_db": "D:\\AI_WORKSPACE\\mia-automation\\sirup_2026.duckdb",
+  "keyword_order": [
+    "alat",
+    "komputer",
+    "jaringan",
+    "perangkat",
+    "printer",
+    "laptop",
+    "cctv",
+    "scanner",
+    "server",
+    "kamera"
+  ],
+  "keyword_counts": {
+    "alat": 980204,
+    "komputer": 142035,
+    "jaringan": 19911,
+    "perangkat": 15709,
+    "printer": 12534,
+    "laptop": 6143,
+    "cctv": 3082,
+    "scanner": 1310,
+    "server": 1270,
+    "kamera": 909
+  },
+  "source_bases": {
+    "tender": "https://spse.inaproc.id/nasional/lelang",
+    "nontender": "https://spse.inaproc.id/nasional/nontender",
+    "darurat": "https://spse.inaproc.id/nasional/darurat"
+  },
+  "raw_dir": "D:\\AI_WORKSPACE\\novanusa\\data\\evidence\\spse\\nasional\\raw\\targeted",
+  "parsed_csv": "D:\\AI_WORKSPACE\\novanusa\\data\\evidence\\spse\\nasional\\parsed\\spse_targeted_2026.csv",
+  "output_file": "D:\\AI_WORKSPACE\\novanusa\\outputs\\evidence\\targeted_spse_evidence_expansion.xlsx",
+  "summary_file": "D:\\AI_WORKSPACE\\novanusa\\outputs\\evidence\\targeted_spse_evidence_expansion_summary.json",
+  "rows_before_dedupe": 2,
+  "rows_after_dedupe": 2,
+  "source_type_counts": {
+    "nontender": 2
+  },
+  "keyword_counts_found": {
+    "alat": 2
+  },
+  "notes": [
+    "Fallback mode uses already-collected SPSE National sample evidence and tags it by SiRUP keyword overlap.",
+    "No opportunity score or AI score is produced.",
+    "Deduplication uses package_code + source_type."
+  ],
+  "provenance_rows": 2
+}

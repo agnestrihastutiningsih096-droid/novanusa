@@ -1,0 +1,45 @@
+{
+  "lpse_name": "Kementerian Koordinator Bidang Pembangunan Manusia dan Kebudayaan",
+  "lpse_url": "https://spse.inaproc.id/kemenkeu",
+  "base_url": "https://spse.inaproc.id/kemenkeu",
+  "slug": "kemenkeu",
+  "source_type": "nontender",
+  "package_code": "10546062000",
+  "package_name": "Pengadaan Pemeliharaan Sistem Keamanan Terpadu Gedung Cawang 2026",
+  "year": 2026,
+  "collected_at": "2026-07-06T00:57:22+00:00",
+  "detail_url": "https://spse.inaproc.id/kemenkeu/nontender/10546062000/pengumumanpl",
+  "source_list_url": "https://spse.inaproc.id/kemenkeu/nontender?tahun=2026",
+  "source_datatable_url": "https://spse.inaproc.id/kemenkeu/dt/pl?tahun=2026",
+  "evidence_level": "LPSE_PUBLIC_DETAIL_FOUND",
+  "detail_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 15529,
+    "elapsed_seconds": 0.204,
+    "sha256": "5e04e57b4fd11f4728fc66771548d082e2515854413bc0ec05710dc40b511cde"
+  },
+  "schedule_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 10173,
+    "elapsed_seconds": 0.133,
+    "sha256": "b7af4985bdd4a7dc1831bc754ce3d55c525dc17216950a544814c75f4a57ab6c"
+  },
+  "participants_fetch": {
+    "http_status": "",
+    "error": "TimeoutError: The read operation timed out"
+  },
+  "winner_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 10322,
+    "elapsed_seconds": 0.119,
+    "sha256": "1ba82567c465a50ca9dd8ac1a8cbd71c89f9a9e70265e9a9de8b3ebe22ed797a"
+  },
+  "document_links": [],
+  "final_evidence_level": "LPSE_PUBLIC_DETAIL_FOUND"
+}

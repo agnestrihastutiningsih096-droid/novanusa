@@ -1,0 +1,24 @@
+[
+  {
+    "institutionId": "manual-send-smoke-test",
+    "sentAt": "2026-07-07T01:52:39.7068290Z",
+    "mode": "mock",
+    "intendedRecipient": "smoke@example.com",
+    "actualRecipient": "mock:no-real-recipient",
+    "subject": "Informasi Rekomendasi Produk Berdasarkan Rencana Pengadaan SiRUP",
+    "providerMessageId": "mock-smoke",
+    "status": "sent",
+    "error": null
+  },
+  {
+    "institutionId": "693520-sekretariat-jenderal-kementerian-kehutanan-z5z14r",
+    "sentAt": "2026-07-08T03:05:01.227Z",
+    "mode": "mock",
+    "intendedRecipient": "setjen@menlhk.go.id",
+    "actualRecipient": "mock:no-real-recipient",
+    "subject": "Informasi Rekomendasi Produk Berdasarkan Rencana Pengadaan SiRUP",
+    "providerMessageId": "mock-1783479901227",
+    "status": "sent",
+    "error": null
+  }
+]

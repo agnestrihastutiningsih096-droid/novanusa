@@ -1,0 +1,55 @@
+{
+  "generated_at": "2026-07-06T00:57:22+00:00",
+  "year": 2026,
+  "limit_lpse": 5,
+  "limit_packages": 10,
+  "sleep_seconds": 1.0,
+  "registry_source": "data\\reference\\lpse\\lpse_registry.csv",
+  "national_sample_source": "data\\evidence\\spse\\nasional\\parsed\\spse_national_sample_2026.csv",
+  "national_sample_rows": 37,
+  "selected_lpse": 5,
+  "collected_packages": 10,
+  "source_type_counts": {
+    "tender": 0,
+    "nontender": 10
+  },
+  "evidence_level_counts": {
+    "LPSE_PUBLIC_DETAIL_FOUND": 10
+  },
+  "lpse_status": [
+    {
+      "lpse_name": "Kementerian Koordinator Bidang Pembangunan Manusia dan Kebudayaan",
+      "lpse_url": "https://spse.inaproc.id/kemenkeu",
+      "source_type": "tender",
+      "status": "http_error",
+      "error": "HTTPError: 404 Not Found"
+    },
+    {
+      "lpse_name": "Kementerian Koordinator Bidang Pembangunan Manusia dan Kebudayaan",
+      "lpse_url": "https://spse.inaproc.id/kemenkeu",
+      "source_type": "nontender",
+      "status": "collected",
+      "list_fetch": {
+        "http_status": 200,
+        "content_type": "text/html; charset=utf-8",
+        "encoding": "utf-8",
+        "bytes": 23456,
+        "elapsed_seconds": 1.025,
+        "sha256": "8332b732a73c29a9aae8a853f3bf07d974f6300e3db5f8b8db9a3e56cc880aac"
+      },
+      "datatable_fetch": {
+        "http_status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "encoding": "utf-8",
+        "bytes": 2545,
+        "elapsed_seconds": 0.529,
+        "sha256": "2d88a7ac2d9060b74a43869b0fa13c2c6d0147d32f9c4a98313f10c6749dcccc"
+      },
+      "datatable_parse": {
+        "datatable_records_total": 2147483647,
+        "datatable_records_filtered": 2147483647,
+        "datatable_rows_received": 10
+      }
+    }
+  ]
+}

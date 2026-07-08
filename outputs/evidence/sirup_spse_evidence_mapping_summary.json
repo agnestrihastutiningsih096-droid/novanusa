@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-07-05T20:56:52+00:00",
+  "year": 2026,
+  "limit": 5000,
+  "sirup_db": "D:\\AI_WORKSPACE\\mia-automation\\sirup_2026.duckdb",
+  "evidence_files": [
+    "D:\\AI_WORKSPACE\\novanusa\\data\\evidence\\spse\\nasional\\parsed\\spse_national_sample_2026.csv",
+    "D:\\AI_WORKSPACE\\novanusa\\data\\evidence\\spse\\nasional\\parsed\\spse_targeted_2026.csv"
+  ],
+  "sirup_rows_loaded": 5000,
+  "spse_rows_loaded": 39,
+  "output_file": "D:\\AI_WORKSPACE\\novanusa\\outputs\\evidence\\sirup_spse_evidence_mapping.xlsx",
+  "summary_file": "D:\\AI_WORKSPACE\\novanusa\\outputs\\evidence\\sirup_spse_evidence_mapping_summary.json",
+  "match_level_counts": {
+    "no_match": 4996,
+    "weak": 4
+  },
+  "evidence_status_counts": {
+    "PLANNED_ONLY": 4996,
+    "NEEDS_MANUAL_REVIEW": 4
+  },
+  "source_type_counts": {
+    "": 4996,
+    "tender": 3,
+    "nontender": 1
+  },
+  "notes": [
+    "Exact match is code-based only.",
+    "Strong match requires package name, institution, year, and budget signals.",
+    "Weak match is a manual review candidate, not an opportunity score.",
+    "No score columns are produced."
+  ]
+}

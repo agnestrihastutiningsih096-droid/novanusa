@@ -1,0 +1,49 @@
+{
+  "lpse_name": "Kementerian Koordinator Bidang Pembangunan Manusia dan Kebudayaan",
+  "lpse_url": "https://spse.inaproc.id/kemenkeu",
+  "base_url": "https://spse.inaproc.id/kemenkeu",
+  "slug": "kemenkeu",
+  "source_type": "nontender",
+  "package_code": "10545857000",
+  "package_name": "Pengadaan Pemeliharaan ELO Enterprise Content Management (ECM) 2026",
+  "year": 2026,
+  "collected_at": "2026-07-06T00:57:22+00:00",
+  "detail_url": "https://spse.inaproc.id/kemenkeu/nontender/10545857000/pengumumanpl",
+  "source_list_url": "https://spse.inaproc.id/kemenkeu/nontender?tahun=2026",
+  "source_datatable_url": "https://spse.inaproc.id/kemenkeu/dt/pl?tahun=2026",
+  "evidence_level": "LPSE_PUBLIC_DETAIL_FOUND",
+  "detail_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 16105,
+    "elapsed_seconds": 0.175,
+    "sha256": "1537d997b4de54113953720f205633ed2625981f0075d46a4e66a2c6583e5759"
+  },
+  "schedule_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 10993,
+    "elapsed_seconds": 0.124,
+    "sha256": "e65774b31edf0798c504b5a7ff7196c1af699149e9a5f303d59f15aabe6740d4"
+  },
+  "participants_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 8805,
+    "elapsed_seconds": 0.111,
+    "sha256": "0386a941e485ae11d12ea72176dd294f3ef05ea0b5abe3429648e8a11d5b35e9"
+  },
+  "winner_fetch": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "encoding": "utf-8",
+    "bytes": 10333,
+    "elapsed_seconds": 0.125,
+    "sha256": "01e216ecf4d96998ca9c826fcd8feed93af9b9da9145b0741853d958077100ec"
+  },
+  "document_links": [],
+  "final_evidence_level": "LPSE_PUBLIC_DETAIL_FOUND"
+}
