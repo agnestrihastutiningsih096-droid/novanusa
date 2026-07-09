@@ -5,6 +5,7 @@ import Link from "next/link";
 import Badge from "@/components/common/Badge";
 import Card from "@/components/common/Card";
 import { splitList, type Prospect } from "@/lib/institution-utils";
+import { labelForStatus } from "@/lib/display-labels";
 import type { WorkflowState } from "@/lib/workflow-state-types";
 
 type OutreachStage = "Drafts" | "Under Review" | "Approved" | "Ready to Send" | "Sent" | "Failed";
@@ -15,6 +16,16 @@ type OutreachCenterClientProps = {
 };
 
 const stages: OutreachStage[] = ["Drafts", "Under Review", "Approved", "Ready to Send", "Sent", "Failed"];
+
+const stageLabels: Record<OutreachStage | "Not Generated", string> = {
+  Drafts: "Draf",
+  "Under Review": "Dalam Peninjauan",
+  Approved: "Disetujui",
+  "Ready to Send": "Siap Dikirim",
+  Sent: "Terkirim",
+  Failed: "Gagal",
+  "Not Generated": "Belum Dibuat",
+};
 
 function stageFor(item: Prospect, workflowState?: WorkflowState): OutreachStage | null {
   if (workflowState?.draft.sent) {
@@ -66,7 +77,7 @@ function draftReviewStatus(item: Prospect, workflowState?: WorkflowState) {
   if (item.outreach_status === "NOT_CONTACTED") {
     return "Not Generated";
   }
-  return item.outreach_status || "Not Available";
+  return item.outreach_status || "Tidak tersedia";
 }
 
 function toneForStage(stage: string) {
@@ -106,9 +117,9 @@ export default function OutreachCenterClient({ institutions, workflowStates }: O
             onClick={() => setActiveStage(stage)}
             className={`rounded-lg border p-4 text-left transition ${activeStage === stage ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
           >
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">{stage}</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">{stageLabels[stage]}</p>
             <p className="mt-3 text-2xl font-semibold text-slate-950">{counts[stage].toLocaleString("id-ID")}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">Data-derived outreach records</p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">Data outreach dari dataset dan workflow</p>
           </button>
         ))}
       </section>
@@ -117,11 +128,11 @@ export default function OutreachCenterClient({ institutions, workflowStates }: O
         <div className="border-b border-slate-200/80 px-5 py-4 md:px-6">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{activeStage}</p>
-              <h2 className="mt-1 text-base font-semibold text-slate-950">{activeRows.length.toLocaleString("id-ID")} records shown</h2>
-              <p className="mt-1 text-sm text-slate-600">Draft review status is shown when it exists in the outreach data. Persisted draft and send status are reflected when available.</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{stageLabels[activeStage]}</p>
+              <h2 className="mt-1 text-base font-semibold text-slate-950">{activeRows.length.toLocaleString("id-ID")} data ditampilkan</h2>
+              <p className="mt-1 text-sm text-slate-600">Status peninjauan draf ditampilkan jika tersedia dalam data outreach. Status draf dan pengiriman tersimpan ikut ditampilkan jika ada.</p>
             </div>
-            <Badge tone="info">Local / data-derived</Badge>
+            <Badge tone="info">Lokal / dari data</Badge>
           </div>
         </div>
 
@@ -130,13 +141,13 @@ export default function OutreachCenterClient({ institutions, workflowStates }: O
             <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
                 <tr>
-                  <th className="border-b border-slate-200 px-5 py-3">Institution</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Contact email</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Target level</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Need categories</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Outreach status</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Draft / review status</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Send status</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Institusi</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Email kontak</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Level target</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Kategori kebutuhan</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Status outreach</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Status draf / peninjauan</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Status pengiriman</th>
                   <th className="border-b border-slate-200 px-5 py-3">Workspace</th>
                 </tr>
               </thead>
@@ -152,14 +163,14 @@ export default function OutreachCenterClient({ institutions, workflowStates }: O
                         </Link>
                         <p className="mt-1 text-xs leading-5 text-slate-500">{item.institution_name}</p>
                       </td>
-                      <td className="max-w-[240px] px-5 py-4 text-xs leading-5 text-slate-600">{item.contact_email || "Not available"}</td>
-                      <td className="px-5 py-4"><Badge>{item.target_level || "Not available"}</Badge></td>
-                      <td className="max-w-[260px] px-5 py-4 text-sm leading-6 text-slate-600">{splitList(item.relevant_categories).join(", ") || "Not categorized"}</td>
-                      <td className="px-5 py-4"><Badge>{item.outreach_status || "Not available"}</Badge></td>
-                      <td className="px-5 py-4"><Badge tone={toneForStage(reviewStatus)}>{reviewStatus}</Badge></td>
-                      <td className="px-5 py-4"><Badge tone={workflowStates[item.institution_id]?.emailSend.status === "sent" ? "success" : workflowStates[item.institution_id]?.emailSend.status === "failed" ? "warning" : "neutral"}>{workflowStates[item.institution_id]?.emailSend.status ?? "not_sent"}</Badge></td>
+                      <td className="max-w-[240px] px-5 py-4 text-xs leading-5 text-slate-600">{item.contact_email || "Tidak tersedia"}</td>
+                      <td className="px-5 py-4"><Badge>{item.target_level || "Tidak tersedia"}</Badge></td>
+                      <td className="max-w-[260px] px-5 py-4 text-sm leading-6 text-slate-600">{splitList(item.relevant_categories).join(", ") || "Belum terkategori"}</td>
+                      <td className="px-5 py-4"><Badge>{labelForStatus(item.outreach_status)}</Badge></td>
+                      <td className="px-5 py-4"><Badge tone={toneForStage(reviewStatus)}>{stageLabels[reviewStatus as OutreachStage] ?? labelForStatus(reviewStatus)}</Badge></td>
+                      <td className="px-5 py-4"><Badge tone={workflowStates[item.institution_id]?.emailSend.status === "sent" ? "success" : workflowStates[item.institution_id]?.emailSend.status === "failed" ? "warning" : "neutral"}>{labelForStatus(workflowStates[item.institution_id]?.emailSend.status ?? "not_sent")}</Badge></td>
                       <td className="px-5 py-4">
-                        <Link href={`/institutions/${item.institution_id}`} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Open Workspace</Link>
+                        <Link href={`/institutions/${item.institution_id}`} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Buka Workspace</Link>
                       </td>
                     </tr>
                   );
@@ -170,8 +181,8 @@ export default function OutreachCenterClient({ institutions, workflowStates }: O
         ) : (
           <div className="px-5 py-10 md:px-6">
             <Card tone="muted" className="p-5 shadow-none">
-              <h3 className="text-sm font-semibold text-slate-950">No records in {activeStage}</h3>
-              <p className="mt-2 text-sm leading-6 text-slate-600">No institution records currently have this outreach state in the loaded dataset. Use the Institution Workspace to generate, review, and approve drafts locally.</p>
+              <h3 className="text-sm font-semibold text-slate-950">Tidak ada data pada {activeStage}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Belum ada data institusi dengan status outreach ini pada dataset yang dimuat. Gunakan Workspace Institusi untuk membuat, meninjau, dan menyetujui draf secara lokal.</p>
             </Card>
           </div>
         )}

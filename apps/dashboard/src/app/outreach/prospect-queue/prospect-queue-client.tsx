@@ -21,10 +21,10 @@ const sendReadinessOptions = ["READY_FOR_CONTACT_SEARCH", "NEEDS_REVIEW"];
 const contactStatusOptions = ["CONTACT_FOUND", "CONTACT_NEEDS_REVIEW", "CONTACT_MISSING"];
 const outreachStatuses = ["NOT_CONTACTED", "DRAFT_GENERATED", "DRAFT_EDITED", "APPROVED", "READY_TO_SEND", "SENT"];
 const operationalFilterOptions: Array<{ label: string; value: OperationalFilter }> = [
-  { label: "All", value: "ALL" },
-  { label: "Contact Found", value: "CONTACT_FOUND" },
-  { label: "Ready for Draft", value: "READY_FOR_DRAFT" },
-  { label: "Ready to Send", value: "READY_TO_SEND" },
+  { label: "Semua", value: "ALL" },
+  { label: "Kontak Ditemukan", value: "CONTACT_FOUND" },
+  { label: "Siap Draf", value: "READY_FOR_DRAFT" },
+  { label: "Siap Dikirim", value: "READY_TO_SEND" },
 ];
 
 function hasContactEmail(prospect: Prospect) {
@@ -36,19 +36,25 @@ function contactPriority(prospect: Prospect) {
 }
 
 function buildDraft(prospect: Prospect) {
-  const categories = splitList(prospect.relevant_categories).join(", ");
-  const examples = splitExamples(prospect.example_package_names).slice(0, 3).join("; ");
+  const categories = splitList(prospect.relevant_categories).join(", ") || "kebutuhan yang tercatat dalam data perencanaan";
+  const year = prospect.months_found.match(/20\d{2}/)?.[0] ?? new Date().getFullYear().toString();
 
-  return `Yth. Tim Pengadaan ${prospect.institution_display_name},
+  return `Yth. Bapak/Ibu,
 
-Berdasarkan informasi rencana pengadaan yang dipublikasikan secara resmi melalui SiRUP untuk periode ${prospect.months_found}, kami melihat beberapa paket perencanaan yang relevan dengan kategori ${categories}.
+Perkenalkan, saya tim sales dari perusahaan kami. Kami menyediakan produk dan layanan terkait ${categories} untuk mendukung kebutuhan ${categories} bagi berbagai institusi dan organisasi.
 
-Sebagai referensi awal, contoh paket yang tercatat: ${examples}.
+Kami menghubungi Bapak/Ibu terkait rencana pengadaan ${categories} oleh ${prospect.institution_display_name} untuk tahun ${year}, sebagaimana dipublikasikan melalui SiRUP sebagai data perencanaan pengadaan.
 
-Mitracom dapat menyampaikan profil perusahaan dan katalog produk yang relevan apabila Bapak/Ibu berkenan melakukan pengenalan awal.
+Terkait kebutuhan tersebut, kami dapat menyediakan informasi produk, spesifikasi teknis, katalog, maupun referensi implementasi yang relevan sebagai bahan pertimbangan.
+
+Apabila Bapak/Ibu berkenan, apakah kami dapat mengetahui PIC yang tepat untuk kebutuhan ini, atau menjadwalkan percakapan singkat melalui telepon pada waktu yang sesuai?
+
+Terima kasih atas waktu dan perhatian Bapak/Ibu.
 
 Hormat kami,
-Tim Mitracom`;
+
+tim sales
+perusahaan kami`;
 }
 
 function badgeToneForTargetLevel(value: string) {
@@ -82,7 +88,7 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("May + June");
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("ALL");
+  const [category, setKategori] = useState("ALL");
   const [targetLevel, setTargetLevel] = useState("ALL");
   const [contactStatus, setContactStatus] = useState("ALL");
   const [sendReadiness, setSendReadiness] = useState("ALL");
@@ -108,7 +114,7 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
         const inTab = activeTab === "May + June" || prospect.months_found.includes(activeTab);
         const searchText = `${prospect.institution_display_name} ${prospect.institution_name} ${prospect.parent_organization} ${prospect.work_unit} ${prospect.location_hint} ${prospect.province_or_region} ${prospect.relevant_categories} ${prospect.contact_email}`.toLowerCase();
         const matchesQuery = !normalizedQuery || searchText.includes(normalizedQuery);
-        const matchesCategory = category === "ALL" || splitList(prospect.relevant_categories).includes(category);
+        const matchesKategori = category === "ALL" || splitList(prospect.relevant_categories).includes(category);
         const matchesTargetLevel = targetLevel === "ALL" || prospect.target_level === targetLevel;
         const matchesContact = contactStatus === "ALL" || prospect.contact_status === contactStatus;
         const matchesSendReadiness = sendReadiness === "ALL" || prospect.send_readiness === sendReadiness;
@@ -120,7 +126,7 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
           (operationalFilter === "READY_FOR_DRAFT" && readyForDraft) ||
           (operationalFilter === "READY_TO_SEND" && status === "READY_TO_SEND");
 
-        return inTab && matchesQuery && matchesCategory && matchesTargetLevel && matchesContact && matchesSendReadiness && matchesStatus && matchesOperational;
+        return inTab && matchesQuery && matchesKategori && matchesTargetLevel && matchesContact && matchesSendReadiness && matchesStatus && matchesOperational;
       })
       .sort((left, right) => {
         const priority = contactPriority(left.prospect) - contactPriority(right.prospect);
@@ -169,17 +175,17 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
 
           <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr_1fr_1fr] xl:grid-cols-[1.2fr_0.95fr_0.95fr_0.95fr_0.95fr_0.95fr]">
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Search institution
+              Cari institusi
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search display name, unit, parent, region, email..."
+                placeholder="Cari nama, unit, induk, wilayah, email..."
                 className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
               />
             </label>
 
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Operational filter
+              Filter operasional
               <select value={operationalFilter} onChange={(event) => setOperationalFilter(event.target.value as OperationalFilter)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
                 {operationalFilterOptions.map((item) => (
                   <option key={item.value} value={item.value}>{item.label}</option>
@@ -188,9 +194,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
             </label>
 
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Category
-              <select value={category} onChange={(event) => setCategory(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
-                <option value="ALL">All categories</option>
+              Kategori
+              <select value={category} onChange={(event) => setKategori(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
+                <option value="ALL">Semua categories</option>
                 {categories.map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
@@ -198,9 +204,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
             </label>
 
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Target level
+              Level target
               <select value={targetLevel} onChange={(event) => setTargetLevel(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
-                <option value="ALL">All</option>
+                <option value="ALL">Semua</option>
                 {targetLevelOptions.map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
@@ -208,9 +214,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
             </label>
 
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Contact status
+              Status kontak
               <select value={contactStatus} onChange={(event) => setContactStatus(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
-                <option value="ALL">All</option>
+                <option value="ALL">Semua</option>
                 {contactStatusOptions.map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
@@ -218,9 +224,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
             </label>
 
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-              Send readiness
+              Kesiapan kirim
               <select value={sendReadiness} onChange={(event) => setSendReadiness(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
-                <option value="ALL">All</option>
+                <option value="ALL">Semua</option>
                 {sendReadinessOptions.map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
@@ -229,9 +235,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
           </div>
 
           <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 lg:max-w-xs">
-            Outreach status
+            Status outreach
             <select value={outreachStatus} onChange={(event) => setOutreachStatus(event.target.value)} className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800">
-              <option value="ALL">All outreach statuses</option>
+              <option value="ALL">Semua outreach statuses</option>
               {outreachStatuses.map((item) => (
                 <option key={item} value={item}>{item}</option>
               ))}
@@ -244,11 +250,11 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
         <div className="border-b border-slate-200/80 px-5 py-4 md:px-6">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Institution table</p>
-              <h2 className="mt-1 text-base font-semibold text-slate-950">{filtered.length.toLocaleString("id-ID")} institutions shown</h2>
-              <p className="mt-1 text-sm text-slate-600">The default operational queue shows all matching institutions with contact email records first.</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Tabel institusi</p>
+              <h2 className="mt-1 text-base font-semibold text-slate-950">{filtered.length.toLocaleString("id-ID")} institusi ditampilkan</h2>
+              <p className="mt-1 text-sm text-slate-600">Antrean operasional menampilkan institusi yang sesuai dengan data email kontak di urutan awal.</p>
             </div>
-            <Badge>Local workflow only</Badge>
+            <Badge>Workflow lokal saja</Badge>
           </div>
         </div>
 
@@ -256,24 +262,24 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
           <table className="w-full min-w-[1880px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
               <tr>
-                <th className="border-b border-slate-200 px-5 py-3">Institution display</th>
-                <th className="border-b border-slate-200 px-5 py-3">Target level</th>
-                <th className="border-b border-slate-200 px-5 py-3">Send readiness</th>
-                <th className="border-b border-slate-200 px-5 py-3">Packages</th>
+                <th className="border-b border-slate-200 px-5 py-3">Tampilan institusi</th>
+                <th className="border-b border-slate-200 px-5 py-3">Level target</th>
+                <th className="border-b border-slate-200 px-5 py-3">Kesiapan kirim</th>
+                <th className="border-b border-slate-200 px-5 py-3">Paket</th>
                 <th className="border-b border-slate-200 px-5 py-3">Pagu</th>
-                <th className="border-b border-slate-200 px-5 py-3">Parent organization</th>
-                <th className="border-b border-slate-200 px-5 py-3">Work unit</th>
-                <th className="border-b border-slate-200 px-5 py-3">Region hint</th>
-                <th className="border-b border-slate-200 px-5 py-3">Months</th>
-                <th className="border-b border-slate-200 px-5 py-3">Categories</th>
-                <th className="border-b border-slate-200 px-5 py-3">Evidence</th>
+                <th className="border-b border-slate-200 px-5 py-3">Organisasi induk</th>
+                <th className="border-b border-slate-200 px-5 py-3">Unit kerja</th>
+                <th className="border-b border-slate-200 px-5 py-3">Petunjuk wilayah</th>
+                <th className="border-b border-slate-200 px-5 py-3">Bulan</th>
+                <th className="border-b border-slate-200 px-5 py-3">Kategori</th>
+                <th className="border-b border-slate-200 px-5 py-3">Bukti</th>
                 <th className="border-b border-slate-200 px-5 py-3">SPSE</th>
-                <th className="border-b border-slate-200 px-5 py-3">Contact status</th>
-                <th className="border-b border-slate-200 px-5 py-3">Contact email</th>
-                <th className="border-b border-slate-200 px-5 py-3">Official website</th>
-                <th className="border-b border-slate-200 px-5 py-3">Contact source URL</th>
+                <th className="border-b border-slate-200 px-5 py-3">Status kontak</th>
+                <th className="border-b border-slate-200 px-5 py-3">Email kontak</th>
+                <th className="border-b border-slate-200 px-5 py-3">Situs resmi</th>
+                <th className="border-b border-slate-200 px-5 py-3">URL sumber kontak</th>
                 <th className="border-b border-slate-200 px-5 py-3">Outreach</th>
-                <th className="border-b border-slate-200 px-5 py-3">Actions</th>
+                <th className="border-b border-slate-200 px-5 py-3">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/80 bg-white">
@@ -315,13 +321,13 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
                   <td className="px-5 py-4"><Badge>{statusFor(prospect)}</Badge></td>
                   <td className="px-5 py-4">
                     <div className="flex w-[440px] flex-wrap gap-2">
-                      <Link href={`/institutions/${prospect.institution_id}`} onClick={(event) => event.stopPropagation()} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Open Workspace</Link>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); setSelected(prospect); setEditingDraft(false); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Preview Evidence</button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); generateDraft(prospect); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Generate Draft</button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); generateDraft(prospect); setWorkflowStatus(prospect, "DRAFT_EDITED"); setEditingDraft(true); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Edit Draft</button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "APPROVED"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Approve</button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "READY_TO_SEND"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Ready to Send</button>
-                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "SENT"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Mark Sent</button>
+                      <Link href={`/institutions/${prospect.institution_id}`} onClick={(event) => event.stopPropagation()} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Buka Workspace</Link>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setSelected(prospect); setEditingDraft(false); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Preview Bukti</button>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); generateDraft(prospect); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Buat Draf</button>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); generateDraft(prospect); setWorkflowStatus(prospect, "DRAFT_EDITED"); setEditingDraft(true); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Edit Draf</button>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "APPROVED"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Setujui</button>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "READY_TO_SEND"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Siap Dikirim</button>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setWorkflowStatus(prospect, "SENT"); }} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Tandai Terkirim</button>
                     </div>
                   </td>
                 </tr>
@@ -335,9 +341,9 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
         <Card className="p-5 md:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Evidence preview</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Bukti preview</p>
               <h2 className="mt-2 text-base font-semibold text-slate-950">{selected.institution_display_name}</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Source export: {csvPath}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Ekspor sumber: {csvPath}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge tone={badgeToneForTargetLevel(selected.target_level)}>{selected.target_level}</Badge>
@@ -348,18 +354,18 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr]">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Evidence details</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Bukti details</p>
               <div className="mt-3 space-y-2 text-sm leading-6 text-slate-700">
-                <p>Contact email: {selected.contact_email || "CONTACT_MISSING"}</p>
-                <p>Official website: {selected.official_website || ""}</p>
-                <p>Contact source URL: {selected.contact_source_url || ""}</p>
-                <p>Relevant categories: {selected.relevant_categories}</p>
-                <p>Parent organization: {selected.parent_organization}</p>
-                <p>Work unit: {selected.work_unit}</p>
-                <p>Region hint: {selected.province_or_region}</p>
+                <p>Email kontak: {selected.contact_email || "CONTACT_MISSING"}</p>
+                <p>Situs resmi: {selected.official_website || ""}</p>
+                <p>URL sumber kontak: {selected.contact_source_url || ""}</p>
+                <p>Kategori relevan: {selected.relevant_categories}</p>
+                <p>Organisasi induk: {selected.parent_organization}</p>
+                <p>Unit kerja: {selected.work_unit}</p>
+                <p>Petunjuk wilayah: {selected.province_or_region}</p>
               </div>
               <div className="mt-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Example package names</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Contoh nama paket</p>
                 <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-700">
                   {splitExamples(selected.example_package_names).map((example) => (
                     <li key={example}>{example}</li>
@@ -370,8 +376,8 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
 
             <div className="rounded-md border border-slate-200 bg-white p-4">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Email draft</p>
-                <button type="button" onClick={() => generateDraft(selected)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Generate Draft</button>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Draf email</p>
+                <button type="button" onClick={() => generateDraft(selected)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Buat Draf</button>
               </div>
               {drafts[selected.institution_name] ? (
                 editingDraft ? (
@@ -384,7 +390,7 @@ export default function ProspectQueueClient({ prospects, csvPath }: ProspectQueu
                   <pre className="mt-3 whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-700">{drafts[selected.institution_name]}</pre>
                 )
               ) : (
-                <p className="mt-3 text-sm leading-6 text-slate-600">Draft has not been generated for this institution.</p>
+                <p className="mt-3 text-sm leading-6 text-slate-600">Draf belum dibuat untuk institusi ini.</p>
               )}
             </div>
           </div>

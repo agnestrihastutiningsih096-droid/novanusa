@@ -20,18 +20,18 @@ export default function Sidebar() {
   return (
     <aside className="flex h-screen w-20 shrink-0 flex-col border-r border-slate-200 bg-white text-slate-950 md:w-64">
       <div className="border-b border-slate-200 px-4 py-4">
-        <Link href="/" className="flex items-center gap-3" aria-label="NovaNusa Dashboard home">
+        <Link href="/" className="flex items-center gap-3" aria-label="Beranda Dashboard NovaNusa">
           <span className="flex size-8 items-center justify-center rounded-md bg-slate-950 text-xs font-semibold tracking-[0.08em] text-white">
             NN
           </span>
           <span className="hidden min-w-0 md:block">
             <span className="block truncate text-sm font-semibold leading-5">NovaNusa</span>
-            <span className="block truncate text-xs leading-4 text-slate-500">Procurement Intelligence</span>
+            <span className="block truncate text-xs leading-4 text-slate-500">Intelijen Pengadaan</span>
           </span>
         </Link>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Primary navigation">
+      <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Navigasi utama">
         {navigationSections.map((section) => {
           const sectionItems = navigationItems.filter((item) => item.section === section.id);
 
@@ -75,8 +75,8 @@ export default function Sidebar() {
 
       <div className="hidden border-t border-slate-200 px-4 py-3 md:block">
         <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="text-xs font-medium leading-4 text-slate-700">Enterprise workspace</div>
-          <div className="mt-0.5 text-[11px] leading-4 text-slate-500">Institution operations</div>
+          <div className="text-xs font-medium leading-4 text-slate-700">Workspace perusahaan</div>
+          <div className="mt-0.5 text-[11px] leading-4 text-slate-500">Operasi institusi</div>
         </div>
       </div>
     </aside>

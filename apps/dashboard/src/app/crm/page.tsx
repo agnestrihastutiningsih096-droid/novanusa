@@ -27,21 +27,21 @@ export default function CrmPage() {
         <Card className="p-6 md:p-7">
           <PageHeader
             eyebrow="CRM"
-            title="CRM Timeline"
-            description="Institution-centric communication timeline summary for outreach follow-up and communication history. Workspace timeline edits are local until backend persistence is added."
-            actions={<Badge tone="info">Local timeline v1</Badge>}
+            title="Timeline CRM"
+            description="Ringkasan timeline komunikasi per institusi untuk tindak lanjut outreach dan histori komunikasi. Edit timeline workspace disimpan pada overlay backend lokal."
+            actions={<Badge tone="info">Timeline lokal v1</Badge>}
           />
         </Card>
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="CRM timeline KPIs">
-          <KPI label="Cold email drafted" value={draftedCount.toLocaleString("id-ID")} detail="Records with data-derived drafted status." badge="Drafted" href="/outreach" />
-          <KPI label="Draft approved" value={approvedCount.toLocaleString("id-ID")} detail="Records with approved or later outreach state." badge="Approved" href="/outreach" />
-          <KPI label="Email sent" value={sentCount.toLocaleString("id-ID")} detail="Placeholder send state derived from outreach status." badge="Sent" href="/crm" />
-          <KPI label="Follow-ups" value={followUpCount.toLocaleString("id-ID")} detail="Follow-up events are local workspace timeline entries for now." badge="Follow-up" href="/crm" />
+          <KPI label="Draf email dibuat" value={draftedCount.toLocaleString("id-ID")} detail="Data dengan status draf dari dataset atau workflow." badge="Drafted" href="/outreach" />
+          <KPI label="Draf disetujui" value={approvedCount.toLocaleString("id-ID")} detail="Data dengan status disetujui atau tahap setelahnya." badge="Approved" href="/outreach" />
+          <KPI label="Email terkirim" value={sentCount.toLocaleString("id-ID")} detail="Status pengiriman dari workflow atau status outreach." badge="Sent" href="/crm" />
+          <KPI label="Tindak lanjut" value={followUpCount.toLocaleString("id-ID")} detail="Aktivitas tindak lanjut dicatat pada timeline workspace lokal." badge="Follow-up" href="/crm" />
         </section>
 
         <Card className="p-5 md:p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Timeline stages</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Tahap timeline</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {eventCounts.map((event) => (
               <div key={event.key} className="rounded-md border border-slate-200 bg-slate-50 p-4">
@@ -57,11 +57,11 @@ export default function CrmPage() {
           <div className="border-b border-slate-200/80 px-5 py-4 md:px-6">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Communication History</p>
-                <h2 className="mt-1 text-base font-semibold text-slate-950">Institution timeline summary</h2>
-                <p className="mt-1 text-sm text-slate-600">Evidence-based outreach history without inferring tender status. Local timeline edits remain inside each workspace for now.</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Histori Komunikasi</p>
+                <h2 className="mt-1 text-base font-semibold text-slate-950">Ringkasan timeline institusi</h2>
+                <p className="mt-1 text-sm text-slate-600">Histori outreach berbasis bukti tanpa menyimpulkan status tender. Edit timeline lokal tetap berada di workspace.</p>
               </div>
-              <Link href="/outreach" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Open Outreach Center</Link>
+              <Link href="/outreach" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Buka Pusat Outreach</Link>
             </div>
           </div>
 
@@ -69,11 +69,11 @@ export default function CrmPage() {
             <table className="w-full min-w-[1080px] border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
                 <tr>
-                  <th className="border-b border-slate-200 px-5 py-3">Institution</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Current timeline event</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Outreach status</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Need categories</th>
-                  <th className="border-b border-slate-200 px-5 py-3">Contact email</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Institusi</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Aktivitas timeline saat ini</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Status outreach</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Kategori kebutuhan</th>
+                  <th className="border-b border-slate-200 px-5 py-3">Email kontak</th>
                   <th className="border-b border-slate-200 px-5 py-3">Workspace</th>
                 </tr>
               </thead>
@@ -81,11 +81,11 @@ export default function CrmPage() {
                 {activeTimelineRows.map((institution) => (
                   <tr key={institution.institution_id} className="align-top transition-colors hover:bg-slate-50/80">
                     <td className="max-w-[320px] px-5 py-4"><Link href={`/institutions/${institution.institution_id}`} className="font-medium text-slate-950 underline-offset-4 hover:text-blue-700 hover:underline">{institution.institution_display_name}</Link></td>
-                    <td className="px-5 py-4"><Badge tone="info">{workflowStates[institution.institution_id]?.timeline.currentStage !== "No CRM event yet" ? workflowStates[institution.institution_id]?.timeline.currentStage : currentTimelineLabel(institution)}</Badge></td>
+                    <td className="px-5 py-4"><Badge tone="info">{workflowStates[institution.institution_id]?.timeline.currentStage !== "Belum ada aktivitas CRM" ? workflowStates[institution.institution_id]?.timeline.currentStage : currentTimelineLabel(institution)}</Badge></td>
                     <td className="px-5 py-4"><Badge>{institution.outreach_status}</Badge></td>
-                    <td className="max-w-[260px] px-5 py-4 text-sm leading-6 text-slate-600">{splitList(institution.relevant_categories).join(", ") || "Not categorized"}</td>
-                    <td className="max-w-[240px] px-5 py-4 text-xs leading-5 text-slate-600">{institution.contact_email || "Not available"}</td>
-                    <td className="px-5 py-4"><Link href={`/institutions/${institution.institution_id}`} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Open Workspace</Link></td>
+                    <td className="max-w-[260px] px-5 py-4 text-sm leading-6 text-slate-600">{splitList(institution.relevant_categories).join(", ") || "Belum terkategori"}</td>
+                    <td className="max-w-[240px] px-5 py-4 text-xs leading-5 text-slate-600">{institution.contact_email || "Tidak tersedia"}</td>
+                    <td className="px-5 py-4"><Link href={`/institutions/${institution.institution_id}`} className="inline-flex h-8 items-center rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Buka Workspace</Link></td>
                   </tr>
                 ))}
               </tbody>

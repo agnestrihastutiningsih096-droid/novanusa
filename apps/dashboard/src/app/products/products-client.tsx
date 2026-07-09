@@ -48,13 +48,13 @@ export default function ProductsClient({ rows, dataSource }: ProductsClientProps
       const payload = (await response.json()) as SyncResponse;
 
       if (!response.ok || !payload.ok) {
-        throw new Error("error" in payload ? payload.error : "Product sync failed.");
+        throw new Error("error" in payload ? payload.error : "Sinkronisasi produk gagal.");
       }
 
-      setSyncMessage(`Sync complete. Inserted ${payload.inserted.toLocaleString("id-ID")}, updated ${payload.updated.toLocaleString("id-ID")}, total ${payload.total.toLocaleString("id-ID")}.`);
+      setSyncMessage(`Sinkron selesai. Ditambahkan ${payload.inserted.toLocaleString("id-ID")}, diperbarui ${payload.updated.toLocaleString("id-ID")}, total ${payload.total.toLocaleString("id-ID")}.`);
       startTransition(() => router.refresh());
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Product sync failed.");
+      setSyncError(error instanceof Error ? error.message : "Sinkronisasi produk gagal.");
     } finally {
       setSyncing(false);
     }
@@ -70,15 +70,15 @@ export default function ProductsClient({ rows, dataSource }: ProductsClientProps
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Product table</p>
-              <h2 className="mt-1 text-base font-semibold text-slate-950">{filteredRows.length.toLocaleString("id-ID")} products shown</h2>
-              <p className="mt-1 text-sm text-slate-600">SiRUP Planning Evidence Only. Product data pending INAPROC verification. No tender status inferred.</p>
-              <p className="mt-1 text-xs leading-5 text-slate-500">Current source: {dataSource.source}. Synced at: {dataSource.synced_at || "Not synced"}.</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Tabel produk</p>
+              <h2 className="mt-1 text-base font-semibold text-slate-950">{filteredRows.length.toLocaleString("id-ID")} produk ditampilkan</h2>
+              <p className="mt-1 text-sm text-slate-600">Hanya bukti perencanaan SiRUP. Data produk menunggu verifikasi INAPROC. Status tender tidak disimpulkan.</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Sumber saat ini: {dataSource.source}. Disinkronkan pada: {dataSource.synced_at || "Belum sinkron"}.</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Badge tone={dataSource.usingSeedFallback ? "warning" : "info"}>{dataSource.usingSeedFallback ? "Seed fallback" : "Synced store"}</Badge>
+              <Badge tone={dataSource.usingSeedFallback ? "warning" : "info"}>{dataSource.usingSeedFallback ? "Fallback data awal" : "Store sinkron"}</Badge>
               <button type="button" onClick={syncProducts} disabled={syncing || isPending} className="inline-flex h-9 items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-3 text-sm font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60">
-                {syncing || isPending ? "Syncing..." : "Sync Products"}
+                {syncing || isPending ? "Menyinkronkan..." : "Sinkronkan Produk"}
               </button>
             </div>
           </div>
@@ -89,12 +89,12 @@ export default function ProductsClient({ rows, dataSource }: ProductsClientProps
           <div className="grid gap-3 lg:grid-cols-[1.3fr_0.9fr_0.9fr_0.9fr_1.1fr]">
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
               Search
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search product, keyword, brand, category..." className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari produk, kata kunci, merek, kategori..." className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100" />
             </label>
-            <FilterSelect label="Provider" value={provider} options={providers} allLabel="All providers" onChange={setProvider} />
-            <FilterSelect label="Brand" value={brand} options={brands} allLabel="All brands" onChange={setBrand} />
-            <FilterSelect label="Category" value={category} options={categories} allLabel="All categories" onChange={setCategory} />
-            <FilterSelect label="Status" value={status} options={statuses} allLabel="All statuses" onChange={setStatus} />
+            <FilterSelect label="Provider" value={provider} options={providers} allLabel="Semua penyedia" onChange={setProvider} />
+            <FilterSelect label="Brand" value={brand} options={brands} allLabel="Semua merek" onChange={setBrand} />
+            <FilterSelect label="Category" value={category} options={categories} allLabel="Semua kategori" onChange={setCategory} />
+            <FilterSelect label="Status" value={status} options={statuses} allLabel="Semua status" onChange={setStatus} />
           </div>
         </div>
       </div>
@@ -107,8 +107,8 @@ export default function ProductsClient({ rows, dataSource }: ProductsClientProps
               <th className="border-b border-slate-200 px-5 py-3">Product</th>
               <th className="border-b border-slate-200 px-5 py-3">Category</th>
               <th className="border-b border-slate-200 px-5 py-3">Keywords</th>
-              <th className="border-b border-slate-200 px-5 py-3">Matched Institutions</th>
-              <th className="border-b border-slate-200 px-5 py-3">Matched Pagu</th>
+              <th className="border-b border-slate-200 px-5 py-3">Institusi Cocok</th>
+              <th className="border-b border-slate-200 px-5 py-3">Pagu Cocok</th>
               <th className="border-b border-slate-200 px-5 py-3">Source</th>
               <th className="border-b border-slate-200 px-5 py-3">Status</th>
             </tr>
@@ -131,7 +131,7 @@ export default function ProductsClient({ rows, dataSource }: ProductsClientProps
         </table>
       </div>
       <div className="border-t border-slate-200/80 px-5 py-4 text-sm text-slate-600 md:px-6">
-        {filteredRows.length === 0 ? "No products match the current filters." : `${filteredRows.length.toLocaleString("id-ID")} visible of ${rows.length.toLocaleString("id-ID")} product records.`}
+        {filteredRows.length === 0 ? "Tidak ada produk yang cocok dengan filter saat ini." : `${filteredRows.length.toLocaleString("id-ID")} visible of ${rows.length.toLocaleString("id-ID")} data produk.`}
       </div>
     </Card>
   );

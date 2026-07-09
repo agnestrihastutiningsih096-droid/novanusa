@@ -33,21 +33,21 @@ function buildNeedSummary(categories: string[], packageCount: number, totalPagu:
 
 function nextOutreachAction(contactStatus: string, sendReadiness: string, outreachStatus: string) {
   if (outreachStatus === "SENT") {
-    return "Review CRM history and prepare follow-up notes.";
+    return "Tinjau histori CRM dan siapkan catatan tindak lanjut.";
   }
   if (outreachStatus === "APPROVED") {
-    return "Send approved outreach through the controlled email workflow.";
+    return "Kirim outreach yang sudah disetujui melalui workflow email terkontrol.";
   }
   if (outreachStatus.includes("DRAFT")) {
-    return "Review the draft against contact evidence and SiRUP planning context.";
+    return "Tinjau draf terhadap bukti kontak dan konteks perencanaan SiRUP.";
   }
   if (contactStatus === "CONTACT_FOUND" && sendReadiness === "READY_FOR_CONTACT_SEARCH") {
-    return "Prepare an evidence-based draft outreach for approval.";
+    return "Siapkan draf outreach berbasis bukti untuk persetujuan.";
   }
   if (contactStatus === "CONTACT_NEEDS_REVIEW") {
-    return "Review contact source evidence before drafting outreach.";
+    return "Tinjau bukti sumber kontak sebelum menyusun outreach.";
   }
-  return "Find or verify an official contact before drafting outreach.";
+  return "Temukan atau verifikasi kontak resmi sebelum menyusun outreach.";
 }
 
 export function generateStaticParams() {
@@ -73,9 +73,9 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
         <Card className="p-6 md:p-7">
           <PageHeader
-            eyebrow="Institution Workspace"
+            eyebrow="Workspace Institusi"
             title={institution.institution_display_name}
-            description="Review who the institution is, available contacts, SiRUP planning indications, evidence status, and the next outreach action."
+            description="Tinjau profil institusi, kontak yang tersedia, indikasi kebutuhan dari SiRUP, status bukti, dan aksi outreach berikutnya."
             actions={
               <div className="flex flex-wrap gap-2">
                 <Badge tone="info">{evidenceStatus}</Badge>
@@ -86,45 +86,45 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
         </Card>
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Institution workspace KPIs">
-          <KPI label="Need category" value={categories[0] ?? "Uncategorized"} detail={categories.length > 1 ? `${categories.length.toLocaleString("id-ID")} categories indicated by SiRUP planning records.` : "Primary category indicated by SiRUP planning records."} badge="Need" href="/outreach/prospect-queue" />
-          <KPI label="Package count" value={institution.total_relevant_packages.toLocaleString("id-ID")} detail="SiRUP planning packages grouped to this institution." badge="Planning" href="/outreach/prospect-queue" />
-          <KPI label="Total pagu" value={formatIdr(institution.total_pagu)} detail="Total budget from grouped planning records." badge="Pagu" href="/outreach/prospect-queue" />
-          <KPI label="Outreach status" value={institution.outreach_status} detail="Current operational outreach stage for this institution." badge="Outreach" href="/outreach" />
+          <KPI label="Kategori kebutuhan" value={categories[0] ?? "Belum terkategori"} detail={categories.length > 1 ? `${categories.length.toLocaleString("id-ID")} kategori terindikasi dari catatan perencanaan SiRUP.` : "Kategori utama terindikasi dari catatan perencanaan SiRUP."} badge="Need" href="/outreach/prospect-queue" />
+          <KPI label="Jumlah paket" value={institution.total_relevant_packages.toLocaleString("id-ID")} detail="Paket perencanaan SiRUP yang dikelompokkan ke institusi ini." badge="Planning" href="/outreach/prospect-queue" />
+          <KPI label="Total pagu" value={formatIdr(institution.total_pagu)} detail="Total pagu dari catatan perencanaan yang dikelompokkan." badge="Pagu" href="/outreach/prospect-queue" />
+          <KPI label="Status outreach" value={institution.outreach_status} detail="Tahap operasional outreach saat ini untuk institusi ini." badge="Outreach" href="/outreach" />
         </section>
 
         <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]" aria-label="Institution identity and contact availability">
           <Card className="p-5 md:p-6">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">1. Institution Profile</p>
-                <h2 className="mt-2 text-base font-semibold text-slate-950">Who the institution is</h2>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">1. Profil Institusi</p>
+                <h2 className="mt-2 text-base font-semibold text-slate-950">Identitas institusi</h2>
               </div>
               <Badge>{institution.target_level}</Badge>
             </div>
             <dl className="mt-4 grid gap-3 text-sm leading-6 text-slate-700 sm:grid-cols-2">
               <div>
-                <dt className="font-medium text-slate-950">Institution ID</dt>
+                <dt className="font-medium text-slate-950">ID Institusi</dt>
                 <dd className="mt-1 break-all">{institution.institution_id}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Institution name</dt>
+                <dt className="font-medium text-slate-950">Nama institusi</dt>
                 <dd className="mt-1">{institution.institution_name}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Parent organization</dt>
-                <dd className="mt-1">{institution.parent_organization || "Not provided"}</dd>
+                <dt className="font-medium text-slate-950">Organisasi induk</dt>
+                <dd className="mt-1">{institution.parent_organization || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Work unit</dt>
-                <dd className="mt-1">{institution.work_unit || "Not provided"}</dd>
+                <dt className="font-medium text-slate-950">Unit kerja</dt>
+                <dd className="mt-1">{institution.work_unit || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Region</dt>
-                <dd className="mt-1">{institution.province_or_region || "Not provided"}</dd>
+                <dt className="font-medium text-slate-950">Wilayah</dt>
+                <dd className="mt-1">{institution.province_or_region || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Location hint</dt>
-                <dd className="mt-1">{institution.location_hint || "Not provided"}</dd>
+                <dt className="font-medium text-slate-950">Petunjuk lokasi</dt>
+                <dd className="mt-1">{institution.location_hint || "Tidak tersedia"}</dd>
               </div>
             </dl>
           </Card>
@@ -132,27 +132,27 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
           <Card className="p-5 md:p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">2. Contact Master</p>
-                <h2 className="mt-2 text-base font-semibold text-slate-950">What contact is available</h2>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">2. Master Kontak</p>
+                <h2 className="mt-2 text-base font-semibold text-slate-950">Kontak yang tersedia</h2>
               </div>
               <Badge tone={badgeToneForContactStatus(institution.contact_status)}>{institution.contact_status}</Badge>
             </div>
             <dl className="mt-4 space-y-3 text-sm leading-6 text-slate-700">
               <div>
                 <dt className="font-medium text-slate-950">Email</dt>
-                <dd className="mt-1 break-all">{institution.contact_email || "Not available"}</dd>
+                <dd className="mt-1 break-all">{institution.contact_email || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Official website</dt>
-                <dd className="mt-1 break-all">{institution.official_website || "Not available"}</dd>
+                <dt className="font-medium text-slate-950">Situs resmi</dt>
+                <dd className="mt-1 break-all">{institution.official_website || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Source URL</dt>
-                <dd className="mt-1 break-all">{institution.contact_source_url || "Not available"}</dd>
+                <dt className="font-medium text-slate-950">URL sumber</dt>
+                <dd className="mt-1 break-all">{institution.contact_source_url || "Tidak tersedia"}</dd>
               </div>
               <div>
-                <dt className="font-medium text-slate-950">Contact person</dt>
-                <dd className="mt-1">{institution.contact_person || "Not available"}{institution.contact_role ? `, ${institution.contact_role}` : ""}</dd>
+                <dt className="font-medium text-slate-950">Narahubung</dt>
+                <dd className="mt-1">{institution.contact_person || "Tidak tersedia"}{institution.contact_role ? `, ${institution.contact_role}` : ""}</dd>
               </div>
             </dl>
           </Card>
@@ -161,27 +161,27 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
         <Card className="p-5 md:p-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">3. Need Intelligence</p>
-              <h2 className="mt-2 text-base font-semibold text-slate-950">What needs are indicated by SiRUP</h2>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">3. Intelijen Kebutuhan</p>
+              <h2 className="mt-2 text-base font-semibold text-slate-950">Kebutuhan yang terindikasi dari SiRUP</h2>
               <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">{needSummary}</p>
             </div>
-            <Badge tone="info">Planning evidence only</Badge>
+            <Badge tone="info">Hanya bukti perencanaan</Badge>
           </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[0.8fr_0.7fr_1.5fr]">
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Need category</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Kategori kebutuhan</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {categories.length > 0 ? categories.map((category) => <Badge key={category}>{category}</Badge>) : <Badge>Uncategorized</Badge>}
+                {categories.length > 0 ? categories.map((category) => <Badge key={category}>{category}</Badge>) : <Badge>Belum terkategori</Badge>}
               </div>
             </div>
             <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Planning totals</p>
-              <p className="mt-3 text-sm font-medium leading-6 text-slate-800">{institution.total_relevant_packages.toLocaleString("id-ID")} packages</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Total perencanaan</p>
+              <p className="mt-3 text-sm font-medium leading-6 text-slate-800">{institution.total_relevant_packages.toLocaleString("id-ID")} paket</p>
               <p className="mt-1 text-sm leading-6 text-slate-600">{formatIdr(institution.total_pagu)}</p>
             </div>
             <div className="rounded-md border border-slate-200 bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Example package names</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Contoh nama paket</p>
               {examples.length > 0 ? (
                 <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-700">
                   {examples.map((example) => (
@@ -189,7 +189,7 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
                   ))}
                 </ul>
               ) : (
-                <p className="mt-3 text-sm leading-6 text-slate-600">No example package names are available in the CSV row.</p>
+                <p className="mt-3 text-sm leading-6 text-slate-600">Tidak ada contoh nama paket pada baris CSV ini.</p>
               )}
             </div>
           </div>
@@ -197,27 +197,27 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
 
         <section className="grid gap-4 lg:grid-cols-[1fr_1fr]" aria-label="Evidence support and outreach action">
           <Card className="p-5 md:p-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">4. Evidence Summary</p>
-            <h2 className="mt-2 text-base font-semibold text-slate-950">What evidence supports it</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">4. Ringkasan Bukti</p>
+            <h2 className="mt-2 text-base font-semibold text-slate-950">Bukti yang mendukung</h2>
             <div className="mt-4 space-y-3 text-sm leading-6 text-slate-700">
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
-                <span className="font-medium text-slate-950">SiRUP evidence status</span>
+                <span className="font-medium text-slate-950">Status bukti SiRUP</span>
                 <Badge tone="info">{evidenceStatus}</Badge>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
-                <span className="font-medium text-slate-950">SPSE status</span>
+                <span className="font-medium text-slate-950">Status SPSE</span>
                 <Badge>{spseStatus}</Badge>
               </div>
               <div className="rounded-md border border-slate-200 bg-white p-4">
-                <p className="font-medium text-slate-950">Evidence rule</p>
-                <p className="mt-2 text-slate-600">Evidence is limited to SiRUP planning records in the enriched dataset. SPSE remains not checked nationally. Tender status is not inferred.</p>
+                <p className="font-medium text-slate-950">Aturan bukti</p>
+                <p className="mt-2 text-slate-600">Bukti terbatas pada catatan perencanaan SiRUP di dataset yang diperkaya. SPSE belum dicek secara nasional. Status tender tidak disimpulkan.</p>
               </div>
             </div>
           </Card>
 
           <Card className="p-5 md:p-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">5. Actions</p>
-            <h2 className="mt-2 text-base font-semibold text-slate-950">What outreach action is next</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">5. Aksi</p>
+            <h2 className="mt-2 text-base font-semibold text-slate-950">Aksi outreach berikutnya</h2>
             <div className="mt-4 flex flex-wrap gap-2">
               <Badge>{institution.outreach_status}</Badge>
               <Badge tone="info">{institution.send_readiness}</Badge>
@@ -225,10 +225,10 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
             </div>
             <p className="mt-4 text-sm leading-6 text-slate-600">{actionSummary}</p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <Link href="/outreach/prospect-queue" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Back to Prospect Queue</Link>
-              <Link href="/contact-master" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Review Contact</Link>
-              <Link href="/outreach" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Open Outreach</Link>
-              <Link href="/crm" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Open CRM</Link>
+              <Link href="/outreach/prospect-queue" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Kembali ke Prospek</Link>
+              <Link href="/contact-master" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Tinjau Kontak</Link>
+              <Link href="/outreach" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Buka Outreach</Link>
+              <Link href="/crm" className="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Buka CRM</Link>
             </div>
           </Card>
         </section>
@@ -241,6 +241,7 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
           packageCount={institution.total_relevant_packages}
           totalPagu={institution.total_pagu}
           examples={examples}
+          monthsFound={institution.months_found}
         />
 
         <section className="grid gap-4 lg:grid-cols-2" aria-label="Sales notes and next action">

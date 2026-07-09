@@ -19,16 +19,16 @@ export type TimelineEventDefinition = {
 };
 
 export const timelineEvents: TimelineEventDefinition[] = [
-  { key: "COLD_EMAIL_DRAFTED", label: "Cold Email Drafted", description: "Evidence-based cold outreach draft prepared locally." },
-  { key: "DRAFT_APPROVED", label: "Draft Approved", description: "Draft reviewed and approved before any send step." },
-  { key: "EMAIL_SENT", label: "Email Sent", description: "Placeholder state only. No real email is sent yet." },
-  { key: "FOLLOW_UP_1", label: "Follow-up 1", description: "First follow-up activity after the send placeholder." },
-  { key: "FOLLOW_UP_2", label: "Follow-up 2", description: "Second follow-up activity after initial follow-up." },
-  { key: "PHONE_CALL", label: "Phone Call", description: "Phone communication recorded locally." },
-  { key: "MEETING", label: "Meeting", description: "Meeting activity recorded locally." },
-  { key: "QUOTATION", label: "Quotation", description: "Quotation activity recorded locally." },
-  { key: "CLOSED_WON", label: "Closed Won", description: "Institution communication outcome marked locally as won." },
-  { key: "CLOSED_LOST", label: "Closed Lost", description: "Institution communication outcome marked locally as lost." },
+  { key: "COLD_EMAIL_DRAFTED", label: "Draf Email Dibuat", description: "Draf outreach berbasis bukti disiapkan secara lokal." },
+  { key: "DRAFT_APPROVED", label: "Draf Disetujui", description: "Draf ditinjau dan disetujui sebelum tahap pengiriman." },
+  { key: "EMAIL_SENT", label: "Email Terkirim", description: "Status pengiriman yang dicatat oleh workflow terkontrol." },
+  { key: "FOLLOW_UP_1", label: "Tindak Lanjut 1", description: "Aktivitas tindak lanjut pertama setelah pengiriman." },
+  { key: "FOLLOW_UP_2", label: "Tindak Lanjut 2", description: "Aktivitas tindak lanjut kedua setelah tindak lanjut awal." },
+  { key: "PHONE_CALL", label: "Telepon", description: "Komunikasi telepon dicatat secara lokal." },
+  { key: "MEETING", label: "Meeting", description: "Aktivitas meeting dicatat secara lokal." },
+  { key: "QUOTATION", label: "Penawaran", description: "Aktivitas penawaran dicatat secara lokal." },
+  { key: "CLOSED_WON", label: "Menang", description: "Hasil komunikasi dengan institusi ditandai menang secara lokal." },
+  { key: "CLOSED_LOST", label: "Kalah", description: "Hasil komunikasi dengan institusi ditandai kalah secara lokal." },
 ];
 
 export function completedTimelineKeysFromOutreachStatus(status: string): Set<TimelineEventKey> {
@@ -64,6 +64,6 @@ export function currentTimelineLabel(prospect: Prospect) {
   const completed = completedTimelineKeysFromOutreachStatus(prospect.outreach_status);
   const latest = [...timelineEvents].reverse().find((event) => completed.has(event.key));
 
-  return latest?.label ?? "No CRM event yet";
+  return latest?.label ?? "Belum ada aktivitas CRM";
 }
 

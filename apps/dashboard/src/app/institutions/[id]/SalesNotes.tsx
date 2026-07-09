@@ -33,7 +33,7 @@ async function postWorkflowState(institutionId: string, patch: WorkflowStatePatc
   });
 
   if (!response.ok) {
-    throw new Error("Failed to save workflow state");
+    throw new Error("Gagal menyimpan status workflow");
   }
 
   return (await response.json()) as WorkflowState;
@@ -41,8 +41,8 @@ async function postWorkflowState(institutionId: string, patch: WorkflowStatePatc
 
 export default function SalesNotes({ institutionId }: SalesNotesProps) {
   const [notes, setNotes] = useState<SalesNotesState>(emptyNotes);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [message, setMessage] = useState("Load pending");
+  const [savedAt, setTersimpanAt] = useState<string | null>(null);
+  const [message, setMessage] = useState("Memuat");
 
   useEffect(() => {
     let active = true;
@@ -58,11 +58,11 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
           requestedDocuments: state.salesNotes.requestedDocuments,
           internalNotes: state.salesNotes.internalNotes,
         });
-        setSavedAt(state.salesNotes.savedAt);
-        setMessage(state.salesNotes.savedAt ? "Loaded saved notes" : "No saved notes yet");
+        setTersimpanAt(state.salesNotes.savedAt);
+        setMessage(state.salesNotes.savedAt ? "Catatan tersimpan dimuat" : "Belum ada catatan tersimpan");
       })
       .catch(() => {
-        if (active) setMessage("Could not load notes");
+        if (active) setMessage("Catatan tidak dapat dimuat");
       });
 
     return () => {
@@ -72,15 +72,15 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
 
   function updateField(field: keyof SalesNotesState, value: string) {
     setNotes((current) => ({ ...current, [field]: value }));
-    setSavedAt(null);
-    setMessage("Edited. Save notes to persist.");
+    setTersimpanAt(null);
+    setMessage("Diedit. Simpan catatan agar tersimpan.");
   }
 
   async function saveNotes() {
     const saved = new Date().toISOString();
     const state = await postWorkflowState(institutionId, { salesNotes: { ...notes, savedAt: saved } });
-    setSavedAt(state.salesNotes.savedAt);
-    setMessage("Saved to backend");
+    setTersimpanAt(state.salesNotes.savedAt);
+    setMessage("Tersimpan ke backend");
   }
 
   async function clearNotes() {
@@ -92,33 +92,33 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
       requestedDocuments: state.salesNotes.requestedDocuments,
       internalNotes: state.salesNotes.internalNotes,
     });
-    setSavedAt(null);
-    setMessage("Cleared and saved to backend");
+    setTersimpanAt(null);
+    setMessage("Dikosongkan dan tersimpan ke backend");
   }
 
   return (
     <Card className="p-5 md:p-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Sales Notes</p>
-          <h2 className="mt-2 text-base font-semibold text-slate-950">Sales context</h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">Capture working notes for this institution. Notes are persisted in the local backend overlay.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Catatan Sales</p>
+          <h2 className="mt-2 text-base font-semibold text-slate-950">Konteks sales</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">Catat konteks kerja untuk institusi ini. Catatan disimpan pada overlay backend lokal.</p>
         </div>
-        <Badge tone={savedAt ? "success" : "neutral"}>{savedAt ? "Saved" : "Unsaved"}</Badge>
+        <Badge tone={savedAt ? "success" : "neutral"}>{savedAt ? "Tersimpan" : "Belum disimpan"}</Badge>
       </div>
 
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
-        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Contact Person<input value={notes.contactPerson} onChange={(event) => updateField("contactPerson", event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
-        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Customer Interest<input value={notes.customerInterest} onChange={(event) => updateField("customerInterest", event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
-        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 lg:col-span-2">Conversation Notes<textarea value={notes.conversationNotes} onChange={(event) => updateField("conversationNotes", event.target.value)} className="mt-2 min-h-28 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
-        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Requested Documents<textarea value={notes.requestedDocuments} onChange={(event) => updateField("requestedDocuments", event.target.value)} className="mt-2 min-h-24 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
-        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Internal Notes<textarea value={notes.internalNotes} onChange={(event) => updateField("internalNotes", event.target.value)} className="mt-2 min-h-24 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
+        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Narahubung<input value={notes.contactPerson} onChange={(event) => updateField("contactPerson", event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
+        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Minat calon pelanggan<input value={notes.customerInterest} onChange={(event) => updateField("customerInterest", event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
+        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 lg:col-span-2">Catatan percakapan<textarea value={notes.conversationNotes} onChange={(event) => updateField("conversationNotes", event.target.value)} className="mt-2 min-h-28 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
+        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Dokumen yang diminta<textarea value={notes.requestedDocuments} onChange={(event) => updateField("requestedDocuments", event.target.value)} className="mt-2 min-h-24 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
+        <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Catatan internal<textarea value={notes.internalNotes} onChange={(event) => updateField("internalNotes", event.target.value)} className="mt-2 min-h-24 w-full rounded-md border border-slate-200 bg-white p-3 text-sm font-medium normal-case leading-6 tracking-normal text-slate-800 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" /></label>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button type="button" onClick={saveNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Save Notes</button>
-        <button type="button" onClick={clearNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Clear Notes</button>
-        <span className="text-xs text-slate-500">{savedAt ? `Last saved ${new Date(savedAt).toLocaleString("id-ID")}` : message}</span>
+        <button type="button" onClick={saveNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Simpan Catatan</button>
+        <button type="button" onClick={clearNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Kosongkan Catatan</button>
+        <span className="text-xs text-slate-500">{savedAt ? `Terakhir disimpan ${new Date(savedAt).toLocaleString("id-ID")}` : message}</span>
       </div>
     </Card>
   );

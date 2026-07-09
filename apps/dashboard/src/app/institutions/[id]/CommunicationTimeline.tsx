@@ -16,9 +16,9 @@ type LocalTimelineEvent = {
   timestamp: string | null;
 };
 
-function formatLocalTimestamp(value: string | null) {
+function formatLocalWaktu(value: string | null) {
   if (!value) {
-    return "Not recorded";
+    return "Belum dicatat";
   }
 
   return new Intl.DateTimeFormat("id-ID", {
@@ -35,22 +35,22 @@ async function postWorkflowState(institutionId: string, patch: WorkflowStatePatc
   });
 
   if (!response.ok) {
-    throw new Error("Failed to save workflow state");
+    throw new Error("Gagal menyimpan status workflow");
   }
 
   return (await response.json()) as WorkflowState;
 }
 
 function labelForKey(key: TimelineEventKey) {
-  return timelineEvents.find((event) => event.key === key)?.label ?? "No CRM event yet";
+  return timelineEvents.find((event) => event.key === key)?.label ?? "Belum ada aktivitas CRM";
 }
 
 export default function CommunicationTimeline({ institutionId, outreachStatus }: CommunicationTimelineProps) {
   const initialCompleted = useMemo(() => completedTimelineKeysFromOutreachStatus(outreachStatus), [outreachStatus]);
-  const [events, setEvents] = useState<Record<TimelineEventKey, LocalTimelineEvent>>(() => {
+  const [aktivitas, setEvents] = useState<Record<TimelineEventKey, LocalTimelineEvent>>(() => {
     return Object.fromEntries(timelineEvents.map((event) => [event.key, { completed: initialCompleted.has(event.key), timestamp: null }])) as Record<TimelineEventKey, LocalTimelineEvent>;
   });
-  const [message, setMessage] = useState("Load pending");
+  const [message, setMessage] = useState("Memuat");
 
   useEffect(() => {
     let active = true;
@@ -70,10 +70,10 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
           ]),
         ) as Record<TimelineEventKey, LocalTimelineEvent>;
         setEvents(next);
-        setMessage(state.timeline.updatedAt ? "Loaded saved timeline" : "No saved timeline yet");
+        setMessage(state.timeline.updatedAt ? "Timeline tersimpan dimuat" : "Belum ada timeline tersimpan");
       })
       .catch(() => {
-        if (active) setMessage("Could not load timeline");
+        if (active) setMessage("Timeline tidak dapat dimuat");
       });
 
     return () => {
@@ -81,12 +81,12 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
     };
   }, [initialCompleted, institutionId]);
 
-  const completedCount = timelineEvents.filter((event) => events[event.key].completed).length;
+  const completedCount = timelineEvents.filter((event) => aktivitas[event.key].completed).length;
 
   async function persist(nextEvents: Record<TimelineEventKey, LocalTimelineEvent>) {
     const completedEvents = timelineEvents.filter((event) => nextEvents[event.key].completed).map((event) => event.key);
     const eventTimestamps = Object.fromEntries(timelineEvents.map((event) => [event.key, nextEvents[event.key].timestamp]).filter(([, value]) => Boolean(value)));
-    const currentStage = completedEvents.length > 0 ? labelForKey(completedEvents[completedEvents.length - 1]) : "No CRM event yet";
+    const currentStage = completedEvents.length > 0 ? labelForKey(completedEvents[completedEvents.length - 1]) : "Belum ada aktivitas CRM";
 
     await postWorkflowState(institutionId, {
       timeline: {
@@ -96,12 +96,12 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
         updatedAt: new Date().toISOString(),
       },
     });
-    setMessage("Saved to backend");
+    setMessage("Tersimpan ke backend");
   }
 
   async function markComplete(key: TimelineEventKey) {
     const next = {
-      ...events,
+      ...aktivitas,
       [key]: { completed: true, timestamp: new Date().toISOString() },
     };
     setEvents(next);
@@ -110,7 +110,7 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
 
   async function resetEvent(key: TimelineEventKey) {
     const next = {
-      ...events,
+      ...aktivitas,
       [key]: { completed: false, timestamp: null },
     };
     setEvents(next);
@@ -121,30 +121,30 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
     <Card className="p-5 md:p-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">CRM Timeline</p>
-          <h2 className="mt-2 text-base font-semibold text-slate-950">Institution communication timeline</h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">Track persisted communication events for this institution. No real email sending yet.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Timeline CRM</p>
+          <h2 className="mt-2 text-base font-semibold text-slate-950">Institusi communication timeline</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">Catat aktivitas komunikasi tersimpan untuk institusi ini. Pengiriman email tetap mengikuti workflow terkontrol.</p>
         </div>
-        <Badge tone={completedCount > 0 ? "info" : "neutral"}>{completedCount.toLocaleString("id-ID")} / {timelineEvents.length.toLocaleString("id-ID")} events</Badge>
+        <Badge tone={completedCount > 0 ? "info" : "neutral"}>{completedCount.toLocaleString("id-ID")} / {timelineEvents.length.toLocaleString("id-ID")} aktivitas</Badge>
       </div>
 
       <div className="mt-5 grid gap-3 lg:grid-cols-2">
         {timelineEvents.map((event, index) => {
-          const state = events[event.key];
+          const state = aktivitas[event.key];
 
           return (
             <div key={event.key} className="rounded-md border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Step {(index + 1).toLocaleString("id-ID")}</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Langkah {(index + 1).toLocaleString("id-ID")}</p>
                   <h3 className="mt-2 text-sm font-semibold text-slate-950">{event.label}</h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{event.description}</p>
                 </div>
-                <Badge tone={state.completed ? "success" : "neutral"}>{state.completed ? "Recorded" : "Pending"}</Badge>
+                <Badge tone={state.completed ? "success" : "neutral"}>{state.completed ? "Tercatat" : "Menunggu"}</Badge>
               </div>
-              <p className="mt-3 text-xs leading-5 text-slate-500">Timestamp: {formatLocalTimestamp(state.timestamp)}</p>
+              <p className="mt-3 text-xs leading-5 text-slate-500">Waktu: {formatLocalWaktu(state.timestamp)}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => markComplete(event.key)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Mark Complete</button>
+                <button type="button" onClick={() => markComplete(event.key)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Tandai Selesai</button>
                 <button type="button" onClick={() => resetEvent(event.key)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Reset</button>
               </div>
             </div>
@@ -152,7 +152,7 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
         })}
       </div>
 
-      <p className="mt-4 text-xs leading-5 text-slate-500">{message}. Timeline entries do not infer tender status.</p>
+      <p className="mt-4 text-xs leading-5 text-slate-500">{message}. Aktivitas timeline tidak menyimpulkan status tender.</p>
     </Card>
   );
 }
