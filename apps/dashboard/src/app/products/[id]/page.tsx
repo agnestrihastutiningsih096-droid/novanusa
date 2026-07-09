@@ -9,6 +9,8 @@ import { findProductById, matchProductToProspects, productRecords } from "@/lib/
 
 type ProductDetailPageProps = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 export function generateStaticParams() {
   return productRecords.map((product) => ({ id: product.id }));
 }
@@ -53,6 +55,8 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
             <DetailItem label="Subcategory" value={product.productSubcategory} />
             <DetailItem label="TKDN" value={product.tkdn} />
             <DetailItem label="Price info" value={product.priceInfo} />
+            <DetailItem label="Certificate" value={product.certificate} />
+            <DetailItem label="Specification" value={product.specification} />
           </dl>
         </Card>
 
@@ -63,7 +67,10 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
           <div className="mt-4 space-y-3 text-sm leading-6 text-slate-700">
             <p>Product data pending INAPROC verification. This record is a manual seed for product coverage mapping, not a verified catalog listing.</p>
             <p>Matched SiRUP need categories are derived from existing dashboard planning categories and package examples.</p>
-            <p>Source URL: {product.sourceUrl || "Not available in manual seed"}</p>
+            <p>Source: {product.source}</p>
+            <p>Evidence status: {product.evidence_status}</p>
+            <p>Synced at: {product.synced_at || "Not synced"}</p>
+            <p>Source URL: {product.sourceUrl || "Not available"}</p>
           </div>
         </Card>
       </section>
@@ -118,3 +125,5 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
 function DetailItem({ label, value }: { label: string; value: string }) {
   return <div><dt className="font-medium text-slate-950">{label}</dt><dd className="mt-1 break-words">{value || "Not available"}</dd></div>;
 }
+
+

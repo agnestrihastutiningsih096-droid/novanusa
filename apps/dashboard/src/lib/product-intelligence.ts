@@ -1,24 +1,49 @@
 import { loadProspects, splitExamples, splitList, type Prospect } from "@/lib/institution-data";
+import { readStoredProducts } from "@/lib/product-store";
 
 export type NeedCategory = "LAPTOP" | "PRINTER" | "SCANNER" | "CCTV" | "NETWORKING" | "SERVER" | "STORAGE" | "UPS" | "CAMERA_VIDEO" | "OFFICE_FURNITURE" | "IT_HARDWARE";
-export type EvidenceSource = "MANUAL_SEED_V1" | "INAPROC_PENDING_VERIFICATION";
-export type ProductStatus = "PRODUCT_DATA_PENDING_INAPROC_VERIFICATION";
+export type EvidenceSource = "MANUAL_SEED_V1" | "INAPROC_PENDING_VERIFICATION" | "INAPROC_SYNC_V1";
+export type ProductStatus = "PRODUCT_DATA_PENDING_INAPROC_VERIFICATION" | "SYNCED_PENDING_VERIFICATION";
 
-export type ProductRecord = {
+export type ProductEntity = {
   id: string;
+  name: string;
+  provider: string;
+  principal: string;
+  brand: string;
+  category: NeedCategory;
+  subcategory: string;
+  price: string;
+  tkdn: string;
+  certificate: string;
+  specification: string;
+  source_url: string;
+  photo_url: string;
+  keywords: string[];
+  evidence_status: EvidenceSource;
+  source: string;
+  synced_at: string;
+  status: ProductStatus;
+};
+
+export type ProductRecord = ProductEntity & {
   providerName: string;
   providerType: string;
   principalName: string;
-  brand: string;
   productName: string;
   productCategory: NeedCategory;
   productSubcategory: string;
-  keywords: string[];
   evidenceSource: EvidenceSource;
   sourceUrl: string;
-  tkdn: string;
   priceInfo: string;
-  status: ProductStatus;
+};
+
+export type ProductDataSet = {
+  products: ProductRecord[];
+  source: string;
+  evidence_status: EvidenceSource;
+  synced_at: string;
+  usingSeedFallback: boolean;
 };
 
 export type ProductMatch = {
@@ -30,30 +55,62 @@ export type ProductMatch = {
 };
 
 const pendingStatus = "PRODUCT_DATA_PENDING_INAPROC_VERIFICATION";
-const baseProduct = {
-  providerName: "Mitracom",
-  providerType: "Provider",
-  principalName: "Pending principal verification",
+const seedSyncedAt = "MANUAL_SEED_V1";
+const baseSeed = {
+  provider: "Mitracom",
+  principal: "Pending principal verification",
   brand: "Generic",
-  evidenceSource: "MANUAL_SEED_V1" as const,
-  sourceUrl: "",
+  price: "Pending INAPROC/e-Katalog verification",
   tkdn: "Pending verification",
-  priceInfo: "Pending INAPROC/e-Katalog verification",
+  certificate: "Pending verification",
+  specification: "Generic product category seed for SiRUP need matching.",
+  source_url: "",
+  photo_url: "",
+  evidence_status: "MANUAL_SEED_V1" as EvidenceSource,
+  source: "MANUAL_SEED_V1",
+  synced_at: seedSyncedAt,
   status: pendingStatus as ProductStatus,
 };
 
-export const productRecords: ProductRecord[] = [
-  { ...baseProduct, id: "mitracom-laptop-general", productName: "Business laptop and notebook", productCategory: "LAPTOP", productSubcategory: "Notebook, laptop 2-in-1, mobile workstation", keywords: ["laptop", "notebook", "2in1", "komputer jinjing"] },
-  { ...baseProduct, id: "mitracom-printer-general", productName: "Office printer and multifunction printer", productCategory: "PRINTER", productSubcategory: "Printer A4/A3, printer scanner, all-in-one", keywords: ["printer", "all in one", "multifunction", "a4", "a3"] },
-  { ...baseProduct, id: "mitracom-scanner-general", productName: "Document scanner", productCategory: "SCANNER", productSubcategory: "Flatbed, ADF, document scanner", keywords: ["scanner", "pemindai", "scan dokumen", "adf"] },
-  { ...baseProduct, id: "mitracom-cctv-general", productName: "CCTV camera and recorder system", productCategory: "CCTV", productSubcategory: "IP camera, NVR, surveillance accessories", keywords: ["cctv", "surveillance", "kamera pengawas", "nvr"] },
-  { ...baseProduct, id: "mitracom-networking-general", productName: "Network equipment", productCategory: "NETWORKING", productSubcategory: "Switch, router, access point, structured cabling", keywords: ["network", "networking", "switch", "router", "access point", "jaringan"] },
-  { ...baseProduct, id: "mitracom-server-general", productName: "Server hardware", productCategory: "SERVER", productSubcategory: "Rack server, tower server, server accessories", keywords: ["server", "rack server", "tower server"] },
-  { ...baseProduct, id: "mitracom-ups-general", productName: "Uninterruptible power supply", productCategory: "UPS", productSubcategory: "UPS desktop, rack UPS, power backup", keywords: ["ups", "uninterruptible power supply", "backup power", "catu daya"] },
-  { ...baseProduct, id: "mitracom-storage-general", productName: "Data storage equipment", productCategory: "STORAGE", productSubcategory: "NAS, external storage, storage drive", keywords: ["storage", "nas", "hard disk", "ssd", "penyimpanan"] },
-  { ...baseProduct, id: "mitracom-camera-video-general", productName: "Camera and video equipment", productCategory: "CAMERA_VIDEO", productSubcategory: "Camera, video conference, audio visual", keywords: ["camera", "kamera", "video", "webcam", "conference"] },
-  { ...baseProduct, id: "mitracom-office-furniture-general", productName: "Office furniture", productCategory: "OFFICE_FURNITURE", productSubcategory: "Office desk, office chair, cabinet, workstation furniture", keywords: ["furniture", "meja", "kursi", "lemari", "mebel"] },
+function withAliases(product: ProductEntity, providerType = "Provider"): ProductRecord {
+  return {
+    ...product,
+    providerName: product.provider,
+    providerType,
+    principalName: product.principal,
+    productName: product.name,
+    productCategory: product.category,
+    productSubcategory: product.subcategory,
+    evidenceSource: product.evidence_status,
+    sourceUrl: product.source_url,
+    priceInfo: product.price,
+  };
+}
+
+export function normalizeProduct(product: ProductEntity): ProductRecord {
+  return withAliases({
+    ...product,
+    keywords: Array.isArray(product.keywords) ? product.keywords : [],
+    evidence_status: product.evidence_status || "INAPROC_PENDING_VERIFICATION",
+    source: product.source || "INAPROC_SYNC_V1",
+    synced_at: product.synced_at || new Date().toISOString(),
+  });
+}
+
+export const seedProductRecords: ProductRecord[] = [
+  withAliases({ ...baseSeed, id: "mitracom-laptop-general", name: "Business laptop and notebook", category: "LAPTOP", subcategory: "Notebook, laptop 2-in-1, mobile workstation", keywords: ["laptop", "notebook", "2in1", "komputer jinjing"] }),
+  withAliases({ ...baseSeed, id: "mitracom-printer-general", name: "Office printer and multifunction printer", category: "PRINTER", subcategory: "Printer A4/A3, printer scanner, all-in-one", keywords: ["printer", "all in one", "multifunction", "a4", "a3"] }),
+  withAliases({ ...baseSeed, id: "mitracom-scanner-general", name: "Document scanner", category: "SCANNER", subcategory: "Flatbed, ADF, document scanner", keywords: ["scanner", "pemindai", "scan dokumen", "adf"] }),
+  withAliases({ ...baseSeed, id: "mitracom-cctv-general", name: "CCTV camera and recorder system", category: "CCTV", subcategory: "IP camera, NVR, surveillance accessories", keywords: ["cctv", "surveillance", "kamera pengawas", "nvr"] }),
+  withAliases({ ...baseSeed, id: "mitracom-networking-general", name: "Network equipment", category: "NETWORKING", subcategory: "Switch, router, access point, structured cabling", keywords: ["network", "networking", "switch", "router", "access point", "jaringan"] }),
+  withAliases({ ...baseSeed, id: "mitracom-server-general", name: "Server hardware", category: "SERVER", subcategory: "Rack server, tower server, server accessories", keywords: ["server", "rack server", "tower server"] }),
+  withAliases({ ...baseSeed, id: "mitracom-ups-general", name: "Uninterruptible power supply", category: "UPS", subcategory: "UPS desktop, rack UPS, power backup", keywords: ["ups", "uninterruptible power supply", "backup power", "catu daya"] }),
+  withAliases({ ...baseSeed, id: "mitracom-storage-general", name: "Data storage equipment", category: "STORAGE", subcategory: "NAS, external storage, storage drive", keywords: ["storage", "nas", "hard disk", "ssd", "penyimpanan"] }),
+  withAliases({ ...baseSeed, id: "mitracom-camera-video-general", name: "Camera and video equipment", category: "CAMERA_VIDEO", subcategory: "Camera, video conference, audio visual", keywords: ["camera", "kamera", "video", "webcam", "conference"] }),
+  withAliases({ ...baseSeed, id: "mitracom-office-furniture-general", name: "Office furniture", category: "OFFICE_FURNITURE", subcategory: "Office desk, office chair, cabinet, workstation furniture", keywords: ["furniture", "meja", "kursi", "lemari", "mebel"] }),
 ];
+
+export const productRecords = seedProductRecords;
 
 const categoryAliases: Record<NeedCategory, NeedCategory[]> = {
   LAPTOP: ["LAPTOP", "IT_HARDWARE"],
@@ -76,6 +133,29 @@ function includesKeyword(prospect: Prospect, keywords: string[]) {
 
 export function getProductNeedCategories(product: ProductRecord) {
   return categoryAliases[product.productCategory];
+}
+
+export function loadProductDataSet(): ProductDataSet {
+  const storedProducts = readStoredProducts();
+  if (storedProducts.length > 0) {
+    const products = storedProducts.map(normalizeProduct);
+    const latestSync = products.map((product) => product.synced_at).sort().at(-1) ?? "";
+    return {
+      products,
+      source: "INAPROC_SYNC_V1",
+      evidence_status: "INAPROC_PENDING_VERIFICATION",
+      synced_at: latestSync,
+      usingSeedFallback: false,
+    };
+  }
+
+  return {
+    products: seedProductRecords,
+    source: "MANUAL_SEED_V1",
+    evidence_status: "INAPROC_PENDING_VERIFICATION",
+    synced_at: seedSyncedAt,
+    usingSeedFallback: true,
+  };
 }
 
 export function matchProductToProspects(product: ProductRecord, prospects = loadProspects()): ProductMatch {
@@ -101,9 +181,17 @@ export function matchProductToProspects(product: ProductRecord, prospects = load
 }
 
 export function getProductMatches(prospects = loadProspects()) {
-  return productRecords.map((product) => matchProductToProspects(product, prospects));
+  return loadProductDataSet().products.map((product) => matchProductToProspects(product, prospects));
+}
+
+export function getProductMatchesWithDataSet(prospects = loadProspects()) {
+  const dataSet = loadProductDataSet();
+  return {
+    dataSet,
+    matches: dataSet.products.map((product) => matchProductToProspects(product, prospects)),
+  };
 }
 
 export function findProductById(id: string) {
-  return productRecords.find((product) => product.id === id);
+  return loadProductDataSet().products.find((product) => product.id === id) ?? seedProductRecords.find((product) => product.id === id);
 }

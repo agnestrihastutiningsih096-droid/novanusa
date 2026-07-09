@@ -1,24 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Badge from "@/components/common/Badge";
 import Card from "@/components/common/Card";
 import { formatIdr } from "@/lib/institution-utils";
-import type { NeedCategory, ProductRecord } from "@/lib/product-intelligence";
+import type { NeedCategory, ProductDataSet, ProductRecord } from "@/lib/product-intelligence";
 
 type ProductTableRow = { product: ProductRecord; needCategories: NeedCategory[]; matchedInstitutionCount: number; matchedPagu: number };
+type SyncResponse = { ok: true; inserted: number; updated: number; total: number; source: string; evidence_status: string; synced_at: string } | { ok: false; error: string };
+type ProductsClientProps = { rows: ProductTableRow[]; dataSource: ProductDataSet };
 
-type ProductsClientProps = { rows: ProductTableRow[] };
-
-export default function ProductsClient({ rows }: ProductsClientProps) {
+export default function ProductsClient({ rows, dataSource }: ProductsClientProps) {
   const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const [provider, setProvider] = useState("ALL");
   const [brand, setBrand] = useState("ALL");
   const [category, setCategory] = useState("ALL");
   const [status, setStatus] = useState("ALL");
   const [query, setQuery] = useState("");
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
   const providers = useMemo(() => Array.from(new Set(rows.map((row) => row.product.providerName))).sort(), [rows]);
   const brands = useMemo(() => Array.from(new Set(rows.map((row) => row.product.brand))).sort(), [rows]);
@@ -29,10 +33,32 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
     const normalizedQuery = query.trim().toLowerCase();
     return rows.filter((row) => {
       const product = row.product;
-      const searchText = [product.providerName, product.principalName, product.brand, product.productName, product.productCategory, product.productSubcategory, product.keywords.join(" "), product.status].join(" ").toLowerCase();
+      const searchText = [product.providerName, product.principalName, product.brand, product.productName, product.productCategory, product.productSubcategory, product.keywords.join(" "), product.status, product.source, product.evidence_status].join(" ").toLowerCase();
       return (provider === "ALL" || product.providerName === provider) && (brand === "ALL" || product.brand === brand) && (category === "ALL" || product.productCategory === category) && (status === "ALL" || product.status === status) && (!normalizedQuery || searchText.includes(normalizedQuery));
     });
   }, [brand, category, provider, query, rows, status]);
+
+  async function syncProducts() {
+    setSyncing(true);
+    setSyncError("");
+    setSyncMessage("");
+
+    try {
+      const response = await fetch("/api/products/sync", { method: "POST" });
+      const payload = (await response.json()) as SyncResponse;
+
+      if (!response.ok || !payload.ok) {
+        throw new Error("error" in payload ? payload.error : "Product sync failed.");
+      }
+
+      setSyncMessage(`Sync complete. Inserted ${payload.inserted.toLocaleString("id-ID")}, updated ${payload.updated.toLocaleString("id-ID")}, total ${payload.total.toLocaleString("id-ID")}.`);
+      startTransition(() => router.refresh());
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "Product sync failed.");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function openProduct(productId: string) {
     router.push(`/products/${productId}`);
@@ -42,14 +68,24 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
     <Card className="overflow-hidden">
       <div className="border-b border-slate-200/80 px-5 py-4 md:px-6">
         <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Product table</p>
               <h2 className="mt-1 text-base font-semibold text-slate-950">{filteredRows.length.toLocaleString("id-ID")} products shown</h2>
               <p className="mt-1 text-sm text-slate-600">SiRUP Planning Evidence Only. Product data pending INAPROC verification. No tender status inferred.</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Current source: {dataSource.source}. Synced at: {dataSource.synced_at || "Not synced"}.</p>
             </div>
-            <Badge tone="info">Evidence matching only</Badge>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Badge tone={dataSource.usingSeedFallback ? "warning" : "info"}>{dataSource.usingSeedFallback ? "Seed fallback" : "Synced store"}</Badge>
+              <button type="button" onClick={syncProducts} disabled={syncing || isPending} className="inline-flex h-9 items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-3 text-sm font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60">
+                {syncing || isPending ? "Syncing..." : "Sync Products"}
+              </button>
+            </div>
           </div>
+
+          {syncMessage ? <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{syncMessage}</div> : null}
+          {syncError ? <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{syncError}</div> : null}
+
           <div className="grid gap-3 lg:grid-cols-[1.3fr_0.9fr_0.9fr_0.9fr_1.1fr]">
             <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
               Search
@@ -63,7 +99,7 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1480px] border-collapse text-left text-sm">
+        <table className="w-full min-w-[1600px] border-collapse text-left text-sm">
           <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
             <tr>
               <th className="border-b border-slate-200 px-5 py-3">Provider</th>
@@ -73,6 +109,7 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
               <th className="border-b border-slate-200 px-5 py-3">Keywords</th>
               <th className="border-b border-slate-200 px-5 py-3">Matched Institutions</th>
               <th className="border-b border-slate-200 px-5 py-3">Matched Pagu</th>
+              <th className="border-b border-slate-200 px-5 py-3">Source</th>
               <th className="border-b border-slate-200 px-5 py-3">Status</th>
             </tr>
           </thead>
@@ -86,6 +123,7 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
                 <td className="max-w-[280px] px-5 py-4 text-slate-600">{row.product.keywords.join(", ")}</td>
                 <td className="px-5 py-4 text-slate-700">{row.matchedInstitutionCount.toLocaleString("id-ID")}</td>
                 <td className="whitespace-nowrap px-5 py-4 text-slate-700">{formatIdr(row.matchedPagu)}</td>
+                <td className="max-w-[220px] px-5 py-4"><Badge tone={row.product.source === "MANUAL_SEED_V1" ? "warning" : "info"}>{row.product.source}</Badge><p className="mt-2 text-xs leading-5 text-slate-500">{row.product.synced_at}</p></td>
                 <td className="px-5 py-4"><Badge tone="warning">{row.product.status}</Badge></td>
               </tr>
             ))}
@@ -93,7 +131,7 @@ export default function ProductsClient({ rows }: ProductsClientProps) {
         </table>
       </div>
       <div className="border-t border-slate-200/80 px-5 py-4 text-sm text-slate-600 md:px-6">
-        {filteredRows.length === 0 ? "No products match the current filters." : `${filteredRows.length.toLocaleString("id-ID")} visible of ${rows.length.toLocaleString("id-ID")} seeded product records.`}
+        {filteredRows.length === 0 ? "No products match the current filters." : `${filteredRows.length.toLocaleString("id-ID")} visible of ${rows.length.toLocaleString("id-ID")} product records.`}
       </div>
     </Card>
   );
