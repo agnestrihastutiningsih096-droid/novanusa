@@ -15,7 +15,30 @@ export type EmailSendResult = {
   providerMessageId: string | null;
   status: "sent" | "failed";
   error: string | null;
+  errorCode: string | null;
 };
+
+type FetchLike = typeof fetch;
+
+export function getOperatorActor(request: Request): string | null {
+  const expected = process.env.NOVANUSA_OPERATOR_TOKEN;
+  const supplied = request.headers.get("x-novanusa-operator-token");
+  if (!expected || !supplied || expected.length < 16 || supplied !== expected) return null;
+  return "local-operator";
+}
+
+export function getTestRecipient(): { recipient: string; errorCode: string | null } {
+  const recipient = (process.env.EMAIL_TEST_RECIPIENT ?? "").trim().toLowerCase();
+  const allowlist = new Set(
+    (process.env.EMAIL_TEST_RECIPIENT_ALLOWLIST ?? "")
+      .split(/[\s,;]+/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (!recipient) return { recipient: "", errorCode: "TEST_RECIPIENT_MISSING" };
+  if (!allowlist.has(recipient)) return { recipient, errorCode: "TEST_RECIPIENT_NOT_ALLOWLISTED" };
+  return { recipient, errorCode: null };
+}
 
 export function getEmailSendMode(): EmailSendMode {
   const mode = (process.env.EMAIL_SEND_MODE ?? "mock").toLowerCase();
@@ -27,7 +50,7 @@ export function getEmailSendMode(): EmailSendMode {
   return "mock";
 }
 
-export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendResult> {
+export async function sendEmailSafely(payload: EmailPayload, fetchImpl: FetchLike = fetch): Promise<EmailSendResult> {
   const mode = getEmailSendMode();
   const intendedRecipient = payload.to;
   const from = process.env.EMAIL_FROM;
@@ -42,6 +65,24 @@ export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendR
       providerMessageId: `mock-${Date.now()}`,
       status: "sent",
       error: null,
+      errorCode: null,
+    };
+  }
+
+  if (mode === "real") {
+    return {
+      mode, intendedRecipient, actualRecipient: "", subject: payload.subject, providerMessageId: null,
+      status: "failed", error: "Real email mode is temporarily disabled.", errorCode: "REAL_MODE_DISABLED",
+    };
+  }
+
+  const testRecipient = getTestRecipient();
+  const actualRecipient = testRecipient.recipient;
+  const subject = `[TEST REDIRECT] ${payload.subject}`;
+  if (testRecipient.errorCode) {
+    return {
+      mode, intendedRecipient, actualRecipient, subject, providerMessageId: null,
+      status: "failed", error: "Test recipient configuration is not permitted.", errorCode: testRecipient.errorCode,
     };
   }
 
@@ -49,33 +90,19 @@ export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendR
     return {
       mode,
       intendedRecipient,
-      actualRecipient: mode === "test" ? (process.env.EMAIL_TEST_RECIPIENT ?? "") : intendedRecipient,
-      subject: payload.subject,
+      actualRecipient,
+      subject,
       providerMessageId: null,
       status: "failed",
-      error: "EMAIL_FROM and RESEND_API_KEY are required for test/real email modes.",
+      error: "Email provider credentials are not configured.",
+      errorCode: "PROVIDER_CREDENTIALS_MISSING",
     };
   }
 
-  const actualRecipient = mode === "test" ? process.env.EMAIL_TEST_RECIPIENT : intendedRecipient;
-
-  if (!actualRecipient) {
-    return {
-      mode,
-      intendedRecipient,
-      actualRecipient: "",
-      subject: payload.subject,
-      providerMessageId: null,
-      status: "failed",
-      error: "EMAIL_TEST_RECIPIENT is required in test mode.",
-    };
-  }
-
-  const subject = mode === "test" ? `[TEST REDIRECT] ${payload.subject}` : payload.subject;
-  const text = mode === "test" ? `${payload.body}\n\n---\nTEST REDIRECT: Intended recipient was ${intendedRecipient}.` : payload.body;
+  const text = `${payload.body}\n\n---\nTEST REDIRECT: Intended recipient was ${intendedRecipient}.`;
 
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetchImpl("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${resendApiKey}`,
@@ -103,7 +130,8 @@ export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendR
         subject,
         providerMessageId: null,
         status: "failed",
-        error: data.message ?? `Email provider returned ${response.status}`,
+        error: `Email provider rejected the request (${response.status}).`,
+        errorCode: "PROVIDER_REJECTED",
       };
     }
 
@@ -115,8 +143,9 @@ export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendR
       providerMessageId: data.id ?? null,
       status: "sent",
       error: null,
+      errorCode: null,
     };
-  } catch (error) {
+  } catch {
     return {
       mode,
       intendedRecipient,
@@ -124,7 +153,8 @@ export async function sendEmailSafely(payload: EmailPayload): Promise<EmailSendR
       subject,
       providerMessageId: null,
       status: "failed",
-      error: error instanceof Error ? error.message : "Unknown email send error",
+      error: "Email provider could not be reached.",
+      errorCode: "PROVIDER_UNAVAILABLE",
     };
   }
 }

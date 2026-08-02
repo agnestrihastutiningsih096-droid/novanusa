@@ -28,7 +28,51 @@ export type Prospect = {
   contact_person: string;
   contact_role: string;
   contact_notes: string;
+  contactVerificationStatus: string;
+  contactVerifiedAt: string;
+  contactVerifiedBy: string;
+  contactVerificationSource: string;
 };
+
+export type ContactVerificationResult =
+  | { ok: true; snapshot: ContactVerificationSnapshot }
+  | { ok: false; code: string };
+
+export type ContactVerificationSnapshot = {
+  institutionId: string;
+  email: string;
+  status: "VERIFIED";
+  verifiedAt: string;
+  verifiedBy: string;
+  sourceUrl: string;
+  verificationSource: string;
+};
+
+export function validateVerifiedContact(prospect: Prospect, expectedInstitutionId: string): ContactVerificationResult {
+  if (prospect.institution_id !== expectedInstitutionId) return { ok: false, code: "CONTACT_INSTITUTION_MISMATCH" };
+  const email = prospect.contact_email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, code: "CONTACT_EMAIL_INVALID" };
+  if (!prospect.contact_source_url.trim()) return { ok: false, code: "CONTACT_SOURCE_MISSING" };
+  if (prospect.contact_status.trim().toUpperCase() === "CONTACT_NEEDS_REVIEW") return { ok: false, code: "CONTACT_NEEDS_REVIEW" };
+  if (prospect.contact_status.trim().toUpperCase() !== "CONTACT_FOUND") return { ok: false, code: "CONTACT_STATUS_NOT_VERIFIED" };
+  const status = prospect.contactVerificationStatus.trim().toUpperCase();
+  if (status !== "VERIFIED") return { ok: false, code: status ? `CONTACT_${status}` : "CONTACT_VERIFICATION_MISSING" };
+  if (!prospect.contactVerifiedAt.trim() || !prospect.contactVerifiedBy.trim() || !prospect.contactVerificationSource.trim()) {
+    return { ok: false, code: "CONTACT_VERIFICATION_INCOMPLETE" };
+  }
+  return {
+    ok: true,
+    snapshot: {
+      institutionId: prospect.institution_id,
+      email,
+      status: "VERIFIED",
+      verifiedAt: prospect.contactVerifiedAt,
+      verifiedBy: prospect.contactVerifiedBy,
+      sourceUrl: prospect.contact_source_url,
+      verificationSource: prospect.contactVerificationSource,
+    },
+  };
+}
 
 export const outreachCsvPath = path.resolve(
   process.cwd(),
@@ -169,6 +213,10 @@ function toProspect(record: Record<string, string>): Prospect {
     contact_person: record.contact_person || "",
     contact_role: record.contact_role || "",
     contact_notes: record.contact_notes || "",
+    contactVerificationStatus: record.contactVerificationStatus || record.contact_verification_status || "",
+    contactVerifiedAt: record.contactVerifiedAt || record.contact_verified_at || "",
+    contactVerifiedBy: record.contactVerifiedBy || record.contact_verified_by || "",
+    contactVerificationSource: record.contactVerificationSource || record.contact_verification_source || "",
   };
 }
 
@@ -201,6 +249,10 @@ function mergeContacts(prospects: Prospect[]): Prospect[] {
       contact_email: contactEmail,
       official_website: contact?.official_website?.trim() ?? "",
       contact_source_url: contactSourceUrl,
+      contactVerificationStatus: contact?.contactVerificationStatus?.trim() || contact?.contact_verification_status?.trim() || "",
+      contactVerifiedAt: contact?.contactVerifiedAt?.trim() || contact?.contact_verified_at?.trim() || "",
+      contactVerifiedBy: contact?.contactVerifiedBy?.trim() || contact?.contact_verified_by?.trim() || "",
+      contactVerificationSource: contact?.contactVerificationSource?.trim() || contact?.contact_verification_source?.trim() || "",
     };
   });
 }

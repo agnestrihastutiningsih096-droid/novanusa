@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import Badge from "@/components/common/Badge";
 import Card from "@/components/common/Card";
-import type { WorkflowState, WorkflowStatePatch } from "@/lib/workflow-state-types";
+import { fetchWorkflowStateIfActive } from "@/lib/operator-auth";
+import { sendSalesNotesCommandIfActive } from "@/lib/sales-notes-client";
+import type { SalesNotesCommandRequest, SalesNotesCommandResponse } from "@/lib/sales-notes-contract";
+import type { WorkflowState } from "@/lib/workflow-state-types";
+import { useInstitutionOperator } from "./InstitutionOperatorContext";
 
 type SalesNotesState = {
   contactPerson: string;
@@ -25,29 +29,25 @@ const emptyNotes: SalesNotesState = {
   internalNotes: "",
 };
 
-async function postWorkflowState(institutionId: string, patch: WorkflowStatePatch) {
-  const response = await fetch(`/api/institutions/${encodeURIComponent(institutionId)}/workflow-state`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-
-  if (!response.ok) {
-    throw new Error("Gagal menyimpan status workflow");
-  }
-
-  return (await response.json()) as WorkflowState;
+async function postSalesNotes(institutionId: string, command: SalesNotesCommandRequest, operatorToken: string, operatorReady: boolean) {
+  const response = await sendSalesNotesCommandIfActive(institutionId, operatorToken, operatorReady, command);
+  if (!response) throw new Error("Token operator diperlukan");
+  const payload = (await response.json()) as SalesNotesCommandResponse;
+  if (!response.ok || !payload.ok) throw new Error(payload.ok ? "Gagal menyimpan catatan sales" : payload.error.message);
+  return payload.salesNotes;
 }
 
 export default function SalesNotes({ institutionId }: SalesNotesProps) {
+  const { operatorReady, operatorToken } = useInstitutionOperator();
   const [notes, setNotes] = useState<SalesNotesState>(emptyNotes);
   const [savedAt, setTersimpanAt] = useState<string | null>(null);
   const [message, setMessage] = useState("Memuat");
 
   useEffect(() => {
+    if (!operatorReady || !operatorToken) return;
     let active = true;
 
-    fetch(`/api/institutions/${encodeURIComponent(institutionId)}/workflow-state`)
+    fetchWorkflowStateIfActive(institutionId, operatorToken, operatorReady)!
       .then((response) => response.json() as Promise<WorkflowState>)
       .then((state) => {
         if (!active) return;
@@ -58,8 +58,8 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
           requestedDocuments: state.salesNotes.requestedDocuments,
           internalNotes: state.salesNotes.internalNotes,
         });
-        setTersimpanAt(state.salesNotes.savedAt);
-        setMessage(state.salesNotes.savedAt ? "Catatan tersimpan dimuat" : "Belum ada catatan tersimpan");
+        setTersimpanAt(state.salesNotes.updatedAt ?? state.salesNotes.savedAt);
+        setMessage(state.salesNotes.updatedAt || state.salesNotes.savedAt ? "Catatan tersimpan dimuat" : "Belum ada catatan tersimpan");
       })
       .catch(() => {
         if (active) setMessage("Catatan tidak dapat dimuat");
@@ -68,7 +68,7 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
     return () => {
       active = false;
     };
-  }, [institutionId]);
+  }, [institutionId, operatorReady, operatorToken]);
 
   function updateField(field: keyof SalesNotesState, value: string) {
     setNotes((current) => ({ ...current, [field]: value }));
@@ -77,22 +77,28 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
   }
 
   async function saveNotes() {
-    const saved = new Date().toISOString();
-    const state = await postWorkflowState(institutionId, { salesNotes: { ...notes, savedAt: saved } });
-    setTersimpanAt(state.salesNotes.savedAt);
+    const salesNotes = await postSalesNotes(institutionId, { operation: "update", notes }, operatorToken, operatorReady);
+    setNotes({
+      contactPerson: salesNotes.contactPerson,
+      conversationNotes: salesNotes.conversationNotes,
+      customerInterest: salesNotes.customerInterest,
+      requestedDocuments: salesNotes.requestedDocuments,
+      internalNotes: salesNotes.internalNotes,
+    });
+    setTersimpanAt(salesNotes.updatedAt);
     setMessage("Tersimpan ke backend");
   }
 
   async function clearNotes() {
-    const state = await postWorkflowState(institutionId, { salesNotes: { ...emptyNotes, savedAt: null } });
+    const salesNotes = await postSalesNotes(institutionId, { operation: "clear" }, operatorToken, operatorReady);
     setNotes({
-      contactPerson: state.salesNotes.contactPerson,
-      conversationNotes: state.salesNotes.conversationNotes,
-      customerInterest: state.salesNotes.customerInterest,
-      requestedDocuments: state.salesNotes.requestedDocuments,
-      internalNotes: state.salesNotes.internalNotes,
+      contactPerson: salesNotes.contactPerson,
+      conversationNotes: salesNotes.conversationNotes,
+      customerInterest: salesNotes.customerInterest,
+      requestedDocuments: salesNotes.requestedDocuments,
+      internalNotes: salesNotes.internalNotes,
     });
-    setTersimpanAt(null);
+    setTersimpanAt(salesNotes.updatedAt);
     setMessage("Dikosongkan dan tersimpan ke backend");
   }
 
@@ -118,7 +124,7 @@ export default function SalesNotes({ institutionId }: SalesNotesProps) {
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button type="button" onClick={saveNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Simpan Catatan</button>
         <button type="button" onClick={clearNotes} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Kosongkan Catatan</button>
-        <span className="text-xs text-slate-500">{savedAt ? `Terakhir disimpan ${new Date(savedAt).toLocaleString("id-ID")}` : message}</span>
+        <span className="text-xs text-slate-500">{!operatorReady ? "Token operator diperlukan" : savedAt ? `Terakhir disimpan ${new Date(savedAt).toLocaleString("id-ID")}` : message}</span>
       </div>
     </Card>
   );

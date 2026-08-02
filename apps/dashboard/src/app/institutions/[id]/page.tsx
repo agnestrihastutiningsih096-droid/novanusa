@@ -8,11 +8,17 @@ import DraftGenerator from "./DraftGenerator";
 import CommunicationTimeline from "./CommunicationTimeline";
 import SalesNotes from "./SalesNotes";
 import NextAction from "./NextAction";
+import ContactVerificationAction from "./ContactVerificationAction";
+import { InstitutionOperatorProvider } from "./InstitutionOperatorContext";
+import { CONTACT_VERIFICATION_SOURCE, createContactFingerprint, getMatchingContactVerification } from "@/lib/contact-verification";
+import { getContactVerification } from "@/lib/contact-verification-store";
 import { findProspectById, formatIdr, loadProspects, splitExamples, splitList } from "@/lib/institution-data";
 
 type InstitutionWorkspacePageProps = {
   params: Promise<{ id: string }>;
 };
+
+export const dynamic = "force-dynamic";
 
 function badgeToneForContactStatus(value: string) {
   if (value === "CONTACT_FOUND") {
@@ -68,6 +74,13 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
   const spseStatus = "SPSE_NOT_CHECKED_NATIONALLY";
   const needSummary = buildNeedSummary(categories, institution.total_relevant_packages, institution.total_pagu, examples);
   const actionSummary = nextOutreachAction(institution.contact_status, institution.send_readiness, institution.outreach_status);
+  const contactFingerprint = createContactFingerprint(
+    institution.institution_id,
+    institution.contact_email,
+    institution.contact_source_url,
+    CONTACT_VERIFICATION_SOURCE,
+  );
+  const persistedVerification = getMatchingContactVerification(institution, getContactVerification(id));
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -92,6 +105,7 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
           <KPI label="Status outreach" value={institution.outreach_status} detail="Tahap operasional outreach saat ini untuk institusi ini." badge="Outreach" href="/outreach" />
         </section>
 
+        <InstitutionOperatorProvider>
         <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]" aria-label="Institution identity and contact availability">
           <Card className="p-5 md:p-6">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -127,6 +141,14 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
                 <dd className="mt-1">{institution.location_hint || "Tidak tersedia"}</dd>
               </div>
             </dl>
+            <ContactVerificationAction
+              institutionId={institution.institution_id}
+              contactEmail={institution.contact_email}
+              evidenceUrl={institution.contact_source_url}
+              expectedContactFingerprint={contactFingerprint}
+              verificationSource={CONTACT_VERIFICATION_SOURCE}
+              initialVerification={persistedVerification}
+            />
           </Card>
 
           <Card className="p-5 md:p-6">
@@ -251,6 +273,7 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
 
 
         <CommunicationTimeline institutionId={institution.institution_id} outreachStatus={institution.outreach_status} />
+        </InstitutionOperatorProvider>
     </div>
   );
 }

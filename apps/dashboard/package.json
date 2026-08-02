@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test --test-isolation=none --experimental-strip-types src/lib/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.2",

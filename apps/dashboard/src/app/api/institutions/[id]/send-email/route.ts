@@ -1,135 +1,152 @@
+import { createHash } from "crypto";
 import { NextResponse } from "next/server";
-import { appendEmailSendHistory } from "@/lib/email-send-history-store";
-import { getEmailSendMode, sendEmailSafely } from "@/lib/email-sender";
-import { findProspectById } from "@/lib/institution-data";
+import { mergeCanonicalContactVerification } from "@/lib/contact-verification";
+import { getContactVerification } from "@/lib/contact-verification-store";
+import { finalizeEmailSend, reserveEmailSend, type EmailSendHistoryRecord } from "@/lib/email-send-history-store";
+import { getEmailSendMode, getOperatorActor, getTestRecipient, sendEmailSafely } from "@/lib/email-sender";
+import { findProspectById, validateVerifiedContact } from "@/lib/institution-data";
 import { getWorkflowState, saveWorkflowState } from "@/lib/workflow-state-store";
 
-type RouteContext = {
-  params: Promise<{ id: string }>;
-};
+type RouteContext = { params: Promise<{ id: string }> };
 
 const subject = "Informasi Rekomendasi Produk Berdasarkan Rencana Pengadaan SiRUP";
 
-function validationError(message: string, status = 400) {
-  return NextResponse.json({ ok: false, error: message, mode: getEmailSendMode() }, { status });
+function responseError(message: string, status: number, code: string) {
+  return NextResponse.json({ ok: false, error: message, code, mode: getEmailSendMode() }, { status });
 }
 
-function unexpectedError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Unexpected email send error.";
-  return NextResponse.json({ ok: false, error: message, mode: getEmailSendMode() }, { status: 500 });
+function createEmailIdempotencyKey(institutionId: string, draftText: string, mode: string, actualRecipient: string) {
+  const digest = createHash("sha256").update(draftText, "utf8").digest("hex");
+  return createHash("sha256").update([institutionId, digest, mode, actualRecipient.toLowerCase()].join("\u001f"), "utf8").digest("hex");
 }
 
-export async function GET() {
-  return NextResponse.json({ mode: getEmailSendMode(), subject });
+export async function GET(request: Request) {
+  if (!getOperatorActor(request)) return responseError("Unauthorized.", 401, "UNAUTHORIZED");
+  const mode = getEmailSendMode();
+  const testRecipient = mode === "test" ? getTestRecipient() : null;
+  return NextResponse.json({
+    mode,
+    subject,
+    actualRecipient: testRecipient?.errorCode ? "" : testRecipient?.recipient ?? "",
+    configurationError: testRecipient?.errorCode ?? (mode === "real" ? "REAL_MODE_DISABLED" : null),
+  });
 }
 
 export async function POST(request: Request, context: RouteContext) {
+  const actor = getOperatorActor(request);
+  if (!actor) return responseError("Unauthorized.", 401, "UNAUTHORIZED");
+
   try {
+    const mode = getEmailSendMode();
+    if (mode === "real") return responseError("Real email mode is temporarily disabled.", 409, "REAL_MODE_DISABLED");
+    const testRecipient = mode === "test" ? getTestRecipient() : { recipient: "mock:no-real-recipient", errorCode: null };
+    if (testRecipient.errorCode) return responseError("Test recipient configuration is not permitted.", 503, testRecipient.errorCode);
+
     const { id } = await context.params;
     const body = (await request.json().catch(() => ({}))) as { confirm?: boolean };
-
-    if (body.confirm !== true) {
-      return validationError("Send confirmation is required.");
-    }
+    if (body.confirm !== true) return responseError("Send confirmation is required.", 400, "CONFIRMATION_REQUIRED");
 
     const institution = findProspectById(id);
-    if (!institution) {
-      return validationError("Institution not found.", 404);
-    }
+    if (!institution) return responseError("Institution not found.", 404, "INSTITUTION_NOT_FOUND");
+    const verifiedInstitution = mergeCanonicalContactVerification(institution, getContactVerification(id));
+    const contact = validateVerifiedContact(verifiedInstitution, id);
+    if (!contact.ok) return responseError("Verified institutional contact is required.", 409, contact.code);
 
     const state = getWorkflowState(id);
-    const contactEmail = institution.contact_email.trim();
     const draftText = state.draft.text.trim();
-
-    if (!contactEmail) {
-      return validationError("Contact email is required before sending.");
+    if (!draftText) return responseError("Approved draft text is required.", 409, "DRAFT_REQUIRED");
+    if (!state.draft.approved || !state.draft.approvedBy || !state.draft.approvedAt) {
+      return responseError("Server-side approval is required.", 409, "APPROVAL_REQUIRED");
     }
-    if (!draftText) {
-      return validationError("Approved draft text is required before sending.");
-    }
-    if (!state.draft.approved) {
-      return validationError("Draft must be approved before sending.");
-    }
-    if (!state.draft.readyToSend) {
-      return validationError("Draft must be marked Ready to Send before sending.");
-    }
-    if (state.draft.sent) {
-      return validationError("Email has already been sent for this institution.", 409);
+    if (!state.draft.readyToSend || state.draft.status !== "READY_TO_SEND") {
+      return responseError("Draft must be Ready to Send.", 409, "READY_TO_SEND_REQUIRED");
     }
 
-    const payload = {
-      to: contactEmail,
-      subject,
-      body: draftText,
-      metadata: {
-        institutionId: id,
-        institutionName: institution.institution_name,
-        institutionDisplayName: institution.institution_display_name,
-      },
-    };
-    const result = await sendEmailSafely(payload);
-    const sentAt = new Date().toISOString();
-
-    appendEmailSendHistory({
+    const actualRecipient = testRecipient.recipient;
+    const idempotencyKey = createEmailIdempotencyKey(id, draftText, mode, actualRecipient);
+    const attemptTimestamp = new Date().toISOString();
+    const auditBase: EmailSendHistoryRecord = {
       institutionId: id,
-      sentAt,
-      mode: result.mode,
-      intendedRecipient: result.intendedRecipient,
-      actualRecipient: result.actualRecipient,
-      subject: result.subject,
-      providerMessageId: result.providerMessageId,
-      status: result.status,
-      error: result.error,
+      sentAt: attemptTimestamp,
+      attemptTimestamp,
+      mode,
+      intendedRecipient: contact.snapshot.email,
+      actualRecipient,
+      subject: mode === "test" ? `[TEST REDIRECT] ${subject}` : subject,
+      providerMessageId: null,
+      status: "reserved",
+      error: null,
+      actor,
+      approvalActor: state.draft.approvedBy,
+      approvalTimestamp: state.draft.approvedAt,
+      contactVerification: contact.snapshot,
+      idempotencyKey,
+      provider: mode === "test" ? "resend" : "mock",
+      result: "SEND_RESERVED",
+      safeErrorCode: null,
+    };
+    const reservation = reserveEmailSend(auditBase);
+    if (!reservation.acquired) {
+      const existing = reservation.existing;
+      return NextResponse.json(
+        { ok: existing?.status === "sent", duplicate: true, code: "DUPLICATE_SEND_PREVENTED", mode, result: existing ?? null },
+        { status: existing?.status === "sent" ? 200 : 409 },
+      );
+    }
+    const attemptId = reservation.record.attemptId;
+    if (!attemptId) return responseError("Email reservation is invalid.", 500, "RESERVATION_INVALID");
+
+    saveWorkflowState(id, {
+      draft: { reviewStatus: "Send Reserved" },
+      emailSend: {
+        sentAt: null, mode, intendedRecipient: contact.snapshot.email, actualRecipient, subject,
+        status: "reserved", idempotencyKey, providerMessageId: null, error: null,
+      },
     });
 
-    if (result.status === "failed") {
-      const failedState = saveWorkflowState(id, {
-        emailSend: {
-          sentAt,
-          mode: result.mode,
-          intendedRecipient: result.intendedRecipient,
-          actualRecipient: result.actualRecipient,
-          subject: result.subject,
-          status: "failed",
-          providerMessageId: result.providerMessageId,
-          error: result.error,
-        },
-      });
+    const result = await sendEmailSafely({
+      to: contact.snapshot.email,
+      subject,
+      body: draftText,
+      metadata: { institutionId: id, institutionName: institution.institution_name },
+    });
+    const completedAt = new Date().toISOString();
+    const success = result.status === "sent";
+    const audit = finalizeEmailSend(attemptId, {
+      sentAt: completedAt,
+      status: success ? "sent" : "failed",
+      result: success ? "SENT" : "FAILED",
+      providerMessageId: result.providerMessageId,
+      safeErrorCode: result.errorCode,
+      error: result.error,
+      actualRecipient: result.actualRecipient,
+      subject: result.subject,
+    });
 
-      return NextResponse.json({ ok: false, error: result.error ?? "Email send failed.", mode: result.mode, state: failedState }, { status: 502 });
-    }
-
-    const completedEvents = Array.from(new Set([...state.timeline.completedEvents, "EMAIL_SENT" as const]));
     const nextState = saveWorkflowState(id, {
       draft: {
-        text: state.draft.text,
-        status: "SENT",
-        reviewStatus: "Sent placeholder",
-        approved: true,
-        readyToSend: true,
-        sent: true,
-        updatedAt: sentAt,
-      },
-      timeline: {
-        completedEvents,
-        eventTimestamps: { ...state.timeline.eventTimestamps, EMAIL_SENT: sentAt },
-        currentStage: "Email Sent",
-        updatedAt: sentAt,
+        status: success ? "SENT" : "READY_TO_SEND",
+        reviewStatus: success ? "Sent" : "Failed",
+        sent: success,
+        readyToSend: !success,
+        updatedAt: completedAt,
       },
       emailSend: {
-        sentAt,
-        mode: result.mode,
+        sentAt: completedAt,
+        mode,
         intendedRecipient: result.intendedRecipient,
         actualRecipient: result.actualRecipient,
         subject: result.subject,
-        status: "sent",
+        status: success ? "sent" : "failed",
+        idempotencyKey,
         providerMessageId: result.providerMessageId,
-        error: null,
+        error: result.error,
       },
     });
 
-    return NextResponse.json({ ok: true, mode: result.mode, result, state: nextState });
-  } catch (error) {
-    return unexpectedError(error);
+    if (!success) return NextResponse.json({ ok: false, code: result.errorCode, mode, state: nextState, audit }, { status: 502 });
+    return NextResponse.json({ ok: true, mode, result, state: nextState, audit });
+  } catch {
+    return responseError("Unexpected email send error.", 500, "SEND_INTERNAL_ERROR");
   }
 }

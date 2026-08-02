@@ -31,6 +31,11 @@ export const timelineEvents: TimelineEventDefinition[] = [
   { key: "CLOSED_LOST", label: "Kalah", description: "Hasil komunikasi dengan institusi ditandai kalah secara lokal." },
 ];
 
+export function projectEmailSent(emailSend: { status: string; sentAt: string | null }) {
+  const completed = emailSend.status === "sent" && Boolean(emailSend.sentAt);
+  return { completed, timestamp: completed ? emailSend.sentAt : null };
+}
+
 export function completedTimelineKeysFromOutreachStatus(status: string): Set<TimelineEventKey> {
   const normalized = status.toUpperCase();
   const completed = new Set<TimelineEventKey>();

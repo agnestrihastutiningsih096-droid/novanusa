@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import Badge from "@/components/common/Badge";
 import Card from "@/components/common/Card";
 import { draftStatusLabels } from "@/lib/display-labels";
+import { fetchWorkflowStateIfActive, operatorHeaders } from "@/lib/operator-auth";
 import type { DraftWorkflowStatus, EmailSendMode, WorkflowState, WorkflowStatePatch } from "@/lib/workflow-state-types";
+import { useInstitutionOperator } from "./InstitutionOperatorContext";
 
 type DraftGeneratorProps = {
   institutionId: string;
@@ -111,12 +113,12 @@ function sendButtonLabel(mode: EmailSendMode) {
   return "Catat Pengiriman Mock";
 }
 
-async function postWorkflowState(institutionId: string, patch: WorkflowStatePatch) {
-  const response = await fetch(`/api/institutions/${encodeURIComponent(institutionId)}/workflow-state`, {
+async function postWorkflowState(institutionId: string, patch: WorkflowStatePatch, operatorToken: string) {
+  const response = await fetchWorkflowStateIfActive(institutionId, operatorToken, true, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
+  if (!response) throw new Error("Token operator diperlukan");
   if (!response.ok) throw new Error("Gagal menyimpan status workflow");
   return (await response.json()) as WorkflowState;
 }
@@ -134,12 +136,14 @@ function parseSendEmailPayload(text: string) {
 }
 
 export default function DraftGenerator(props: DraftGeneratorProps) {
+  const { operatorToken, operatorReady, updateOperatorToken, activateOperator, deactivateOperator } = useInstitutionOperator();
   const generatedDraft = useMemo(() => buildDraft(props), [props]);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState<DraftWorkflowStatus>("NOT_GENERATED");
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("Memuat");
   const [sendMode, setSendMode] = useState<EmailSendMode>("mock");
+  const [testRecipient, setTestRecipient] = useState("");
   const [emailSend, setEmailSend] = useState<WorkflowState["emailSend"] | null>(null);
   const [sendMessage, setSendMessage] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -149,10 +153,18 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
   const canPreview = hasDraft && status === "READY_TO_SEND" && Boolean(props.contactEmail) && !alreadySent && !isSending;
 
   useEffect(() => {
+    if (!operatorReady || !operatorToken) return;
     let active = true;
+    const headers = operatorHeaders(operatorToken);
     Promise.all([
-      fetch(`/api/institutions/${encodeURIComponent(props.institutionId)}/workflow-state`).then((response) => response.json() as Promise<WorkflowState>),
-      fetch(`/api/institutions/${encodeURIComponent(props.institutionId)}/send-email`).then((response) => response.json() as Promise<{ mode: EmailSendMode }>),
+      fetchWorkflowStateIfActive(props.institutionId, operatorToken, operatorReady)!.then((response) => {
+        if (!response.ok) throw new Error("Operator tidak terautentikasi.");
+        return response.json() as Promise<WorkflowState>;
+      }),
+      fetch(`/api/institutions/${encodeURIComponent(props.institutionId)}/send-email`, { headers }).then((response) => {
+        if (!response.ok) throw new Error("Operator tidak terautentikasi.");
+        return response.json() as Promise<{ mode: EmailSendMode; actualRecipient?: string; configurationError?: string | null }>;
+      }),
     ])
       .then(([state, sendConfig]) => {
         if (!active) return;
@@ -161,19 +173,35 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
         setUpdatedAt(state.draft.updatedAt);
         setEmailSend(state.emailSend);
         setSendMode(sendConfig.mode ?? "mock");
+        setTestRecipient(sendConfig.actualRecipient ?? "");
+        if (sendConfig.configurationError) setSendError(sendConfig.configurationError);
         setSaveMessage(state.draft.updatedAt ? "Draf tersimpan dimuat" : "Belum ada draf tersimpan");
         if (state.emailSend.sentAt) setSendMessage(`Terkirim ${formatLocalTimestamp(state.emailSend.sentAt)} ke ${state.emailSend.actualRecipient || props.contactEmail}`);
       })
       .catch(() => {
-        if (active) setSaveMessage("Draf tersimpan tidak dapat dimuat");
+        if (active) {
+          deactivateOperator();
+          setSaveMessage("Token operator ditolak atau backend tidak dapat diakses");
+        }
       });
     return () => {
       active = false;
     };
-  }, [props.contactEmail, props.institutionId]);
+  }, [deactivateOperator, operatorReady, operatorToken, props.contactEmail, props.institutionId]);
+
+  function authenticateOperator() {
+    if (!activateOperator()) return;
+    setSaveMessage("Memverifikasi operator...");
+  }
+
+  function clearOperator() {
+    deactivateOperator();
+    setSaveMessage("Token operator diperlukan");
+  }
 
   async function persistDraft(nextDraft: string, nextStatus: DraftWorkflowStatus) {
     const now = new Date().toISOString();
+    if (!operatorReady) throw new Error("Token operator diperlukan");
     const state = await postWorkflowState(props.institutionId, {
       draft: {
         text: nextDraft,
@@ -184,7 +212,7 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
         sent: nextStatus === "SENT",
         updatedAt: now,
       },
-    });
+    }, operatorToken);
     setDraft(state.draft.text);
     setStatus(state.draft.status);
     setUpdatedAt(state.draft.updatedAt);
@@ -220,7 +248,8 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
     setSendError(null);
     setSendMessage("Mengirim...");
     try {
-      const response = await fetch(`/api/institutions/${encodeURIComponent(props.institutionId)}/send-email`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) });
+      if (!operatorReady) throw new Error("Token operator diperlukan");
+      const response = await fetch(`/api/institutions/${encodeURIComponent(props.institutionId)}/send-email`, { method: "POST", headers: operatorHeaders(operatorToken), body: JSON.stringify({ confirm: true }) });
       const text = await response.text();
       const { payload, error } = parseSendEmailPayload(text);
       if (error || !payload) {
@@ -262,6 +291,16 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
         <div className="flex flex-wrap gap-2"><Badge tone={statusTone(status)}>{draftStatusLabels[status]}</Badge>{status === "READY_TO_SEND" ? <Badge tone="success">Siap Dikirim</Badge> : null}{alreadySent ? <Badge tone="success">Terkirim</Badge> : null}</div>
       </div>
 
+      <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Temporary Local Operator Guard</p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input type="password" autoComplete="off" value={operatorToken} onChange={(event) => updateOperatorToken(event.target.value)} placeholder="NOVANUSA_OPERATOR_TOKEN" className="h-9 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" />
+          <button type="button" onClick={authenticateOperator} disabled={!operatorToken.trim()} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 disabled:opacity-50">{operatorReady ? "Operator Aktif" : "Aktifkan Operator"}</button>
+          {operatorReady ? <button type="button" onClick={clearOperator} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700">Hapus Token</button> : null}
+        </div>
+        <p className="mt-2 text-xs leading-5 text-slate-500">Token disimpan hanya dalam memori komponen halaman ini dan dikirim sebagai header ke endpoint lokal. Ini bukan authentication architecture final.</p>
+      </div>
+
       <div className="mt-5 grid gap-4 lg:grid-cols-[0.75fr_1.25fr]">
         <div className="rounded-md border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Metadata draf</p><dl className="mt-3 space-y-3 text-sm leading-6 text-slate-700"><div><dt className="font-medium text-slate-950">Status workflow</dt><dd className="mt-1">{draftStatusLabels[status]}</dd></div><div><dt className="font-medium text-slate-950">Diperbarui</dt><dd className="mt-1">{formatLocalTimestamp(updatedAt)}</dd></div><div><dt className="font-medium text-slate-950">Penyimpanan</dt><dd className="mt-1">{saveMessage}</dd></div></dl></div>
         <div className="rounded-md border border-slate-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Kontrol workflow</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={generateDraft} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Buat Draf</button><button type="button" onClick={saveDraft} disabled={!hasDraft} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Simpan Draf</button><button type="button" onClick={resetDraft} disabled={!hasDraft && status === "NOT_GENERATED"} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Reset Draf</button><button type="button" onClick={markUnderReview} disabled={!hasDraft} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Ajukan Peninjauan</button><button type="button" onClick={approveDraft} disabled={!hasDraft} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Setujui</button><button type="button" onClick={markReadyToSend} disabled={!hasDraft || status !== "APPROVED"} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Siap Dikirim</button></div><p className="mt-3 text-xs leading-5 text-slate-500">Status workflow tersimpan di backend.</p></div>
@@ -272,7 +311,7 @@ export default function DraftGenerator(props: DraftGeneratorProps) {
       <Card tone="muted" className="mt-5 p-4 shadow-none">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Pratinjau Email</p><h3 className="mt-2 text-sm font-semibold text-slate-950">Pengiriman terkontrol</h3></div><Badge tone={sendMode === "real" ? "warning" : sendMode === "test" ? "info" : "neutral"}>{sendMode.toUpperCase()}</Badge></div>
         {!props.contactEmail ? <p className="mt-3 text-sm leading-6 text-slate-600">Email kontak belum tersedia.</p> : !hasDraft ? <p className="mt-3 text-sm leading-6 text-slate-600">Draf belum dibuat.</p> : status !== "READY_TO_SEND" && !alreadySent ? <p className="mt-3 text-sm leading-6 text-slate-600">Menunggu persetujuan dan status Siap Dikirim sebelum pratinjau email aktif.</p> : (
-          <div className="mt-4 space-y-3 text-sm leading-6 text-slate-700"><p><span className="font-medium text-slate-950">Kepada:</span> {props.contactEmail}</p><p><span className="font-medium text-slate-950">Subjek:</span> {sendMode === "test" ? `[TEST REDIRECT] ${emailSubject}` : emailSubject}</p><pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">{draft}</pre>{alreadySent ? <p className="text-sm text-slate-600">Terkirim {formatLocalTimestamp(emailSend?.sentAt ?? null)} ke {emailSend?.actualRecipient || props.contactEmail}.</p> : <button type="button" onClick={sendEmail} disabled={!canPreview} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{isSending ? "Mengirim..." : sendButtonLabel(sendMode)}</button>}<p className={`text-xs leading-5 ${sendError ? "text-red-600" : "text-slate-500"}`}>{sendMessage || "Pratinjau diperlukan sebelum pengiriman. Pengiriman massal tidak tersedia."}</p></div>
+          <div className="mt-4 space-y-3 text-sm leading-6 text-slate-700"><p><span className="font-medium text-slate-950">Intended recipient:</span> {props.contactEmail}</p>{sendMode === "test" ? <p><span className="font-medium text-slate-950">Actual test recipient:</span> {testRecipient || "Konfigurasi allowlist belum valid"}</p> : null}<p><span className="font-medium text-slate-950">Subjek:</span> {sendMode === "test" ? `[TEST REDIRECT] ${emailSubject}` : emailSubject}</p><pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">{draft}</pre>{alreadySent ? <p className="text-sm text-slate-600">Terkirim {formatLocalTimestamp(emailSend?.sentAt ?? null)} ke {emailSend?.actualRecipient || props.contactEmail}.</p> : <button type="button" onClick={sendEmail} disabled={!canPreview || sendMode === "real" || (sendMode === "test" && !testRecipient)} className="h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{isSending ? "Mengirim..." : sendButtonLabel(sendMode)}</button>}<p className={`text-xs leading-5 ${sendError ? "text-red-600" : "text-slate-500"}`}>{sendMessage || "Pratinjau diperlukan sebelum pengiriman. Pengiriman massal tidak tersedia."}</p></div>
         )}
       </Card>
     </Card>

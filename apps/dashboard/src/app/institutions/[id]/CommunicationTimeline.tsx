@@ -3,8 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import Badge from "@/components/common/Badge";
 import Card from "@/components/common/Card";
-import { completedTimelineKeysFromOutreachStatus, timelineEvents, type TimelineEventKey } from "@/lib/crm-timeline";
-import type { WorkflowState, WorkflowStatePatch } from "@/lib/workflow-state-types";
+import { completedTimelineKeysFromOutreachStatus, projectEmailSent, timelineEvents, type TimelineEventKey } from "@/lib/crm-timeline";
+import { fetchWorkflowStateIfActive } from "@/lib/operator-auth";
+import { sendTimelineCommandIfActive } from "@/lib/timeline-client";
+import { isManualTimelineEventKey, type ManualTimelineEventKey, type TimelineCommandRequest, type TimelineCommandResponse } from "@/lib/timeline-contract";
+import type { WorkflowState } from "@/lib/workflow-state-types";
+import { useInstitutionOperator } from "./InstitutionOperatorContext";
 
 type CommunicationTimelineProps = {
   institutionId: string;
@@ -13,7 +17,21 @@ type CommunicationTimelineProps = {
 
 type LocalTimelineEvent = {
   completed: boolean;
+  derived: boolean;
+  manual: boolean;
   timestamp: string | null;
+};
+
+const emptyEmailSend: WorkflowState["emailSend"] = {
+  sentAt: null,
+  mode: null,
+  intendedRecipient: "",
+  actualRecipient: "",
+  subject: "",
+  status: "not_sent",
+  idempotencyKey: null,
+  providerMessageId: null,
+  error: null,
 };
 
 function formatLocalWaktu(value: string | null) {
@@ -27,49 +45,50 @@ function formatLocalWaktu(value: string | null) {
   }).format(new Date(value));
 }
 
-async function postWorkflowState(institutionId: string, patch: WorkflowStatePatch) {
-  const response = await fetch(`/api/institutions/${encodeURIComponent(institutionId)}/workflow-state`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-
-  if (!response.ok) {
-    throw new Error("Gagal menyimpan status workflow");
-  }
-
-  return (await response.json()) as WorkflowState;
+async function postTimeline(institutionId: string, command: TimelineCommandRequest, operatorToken: string, operatorReady: boolean) {
+  const response = await sendTimelineCommandIfActive(institutionId, operatorToken, operatorReady, command);
+  if (!response) throw new Error("Token operator diperlukan");
+  const payload = (await response.json()) as TimelineCommandResponse;
+  if (!response.ok || !payload.ok) throw new Error(payload.ok ? "Gagal menyimpan timeline" : payload.error.message);
+  return payload.timeline;
 }
 
-function labelForKey(key: TimelineEventKey) {
-  return timelineEvents.find((event) => event.key === key)?.label ?? "Belum ada aktivitas CRM";
+function mergeTimeline(timeline: WorkflowState["timeline"], emailSend: WorkflowState["emailSend"], derivedEvents: Set<TimelineEventKey>) {
+  const manualEvents = new Set(timeline.completedEvents);
+  const emailSent = projectEmailSent(emailSend);
+  return Object.fromEntries(
+    timelineEvents.map((event) => {
+      const derived = event.key === "EMAIL_SENT" ? emailSent.completed : derivedEvents.has(event.key);
+      const manual = isManualTimelineEventKey(event.key) && manualEvents.has(event.key);
+      const timestamp = event.key === "EMAIL_SENT" ? emailSent.timestamp : manual ? timeline.eventTimestamps[event.key] ?? null : null;
+      return [event.key, { completed: derived || manual, derived, manual, timestamp }];
+    }),
+  ) as Record<TimelineEventKey, LocalTimelineEvent>;
 }
 
 export default function CommunicationTimeline({ institutionId, outreachStatus }: CommunicationTimelineProps) {
+  const { operatorReady, operatorToken } = useInstitutionOperator();
   const initialCompleted = useMemo(() => completedTimelineKeysFromOutreachStatus(outreachStatus), [outreachStatus]);
   const [aktivitas, setEvents] = useState<Record<TimelineEventKey, LocalTimelineEvent>>(() => {
-    return Object.fromEntries(timelineEvents.map((event) => [event.key, { completed: initialCompleted.has(event.key), timestamp: null }])) as Record<TimelineEventKey, LocalTimelineEvent>;
+    return mergeTimeline(
+      { completedEvents: [], eventTimestamps: {}, currentStage: "No CRM event yet", updatedAt: null, updatedBy: null },
+      emptyEmailSend,
+      initialCompleted,
+    );
   });
+  const [emailSend, setEmailSend] = useState<WorkflowState["emailSend"]>(emptyEmailSend);
   const [message, setMessage] = useState("Memuat");
 
   useEffect(() => {
+    if (!operatorReady || !operatorToken) return;
     let active = true;
 
-    fetch(`/api/institutions/${encodeURIComponent(institutionId)}/workflow-state`)
+    fetchWorkflowStateIfActive(institutionId, operatorToken, operatorReady)!
       .then((response) => response.json() as Promise<WorkflowState>)
       .then((state) => {
         if (!active) return;
-        const completed = new Set<TimelineEventKey>([...Array.from(initialCompleted), ...state.timeline.completedEvents]);
-        const next = Object.fromEntries(
-          timelineEvents.map((event) => [
-            event.key,
-            {
-              completed: completed.has(event.key),
-              timestamp: state.timeline.eventTimestamps[event.key] ?? null,
-            },
-          ]),
-        ) as Record<TimelineEventKey, LocalTimelineEvent>;
-        setEvents(next);
+        setEmailSend(state.emailSend);
+        setEvents(mergeTimeline(state.timeline, state.emailSend, initialCompleted));
         setMessage(state.timeline.updatedAt ? "Timeline tersimpan dimuat" : "Belum ada timeline tersimpan");
       })
       .catch(() => {
@@ -79,42 +98,20 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
     return () => {
       active = false;
     };
-  }, [initialCompleted, institutionId]);
+  }, [initialCompleted, institutionId, operatorReady, operatorToken]);
 
   const completedCount = timelineEvents.filter((event) => aktivitas[event.key].completed).length;
 
-  async function persist(nextEvents: Record<TimelineEventKey, LocalTimelineEvent>) {
-    const completedEvents = timelineEvents.filter((event) => nextEvents[event.key].completed).map((event) => event.key);
-    const eventTimestamps = Object.fromEntries(timelineEvents.map((event) => [event.key, nextEvents[event.key].timestamp]).filter(([, value]) => Boolean(value)));
-    const currentStage = completedEvents.length > 0 ? labelForKey(completedEvents[completedEvents.length - 1]) : "Belum ada aktivitas CRM";
-
-    await postWorkflowState(institutionId, {
-      timeline: {
-        completedEvents,
-        eventTimestamps,
-        currentStage,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+  async function markComplete(event: ManualTimelineEventKey) {
+    const timeline = await postTimeline(institutionId, { operation: "complete", event }, operatorToken, operatorReady);
+    setEvents(mergeTimeline(timeline, emailSend, initialCompleted));
     setMessage("Tersimpan ke backend");
   }
 
-  async function markComplete(key: TimelineEventKey) {
-    const next = {
-      ...aktivitas,
-      [key]: { completed: true, timestamp: new Date().toISOString() },
-    };
-    setEvents(next);
-    await persist(next);
-  }
-
-  async function resetEvent(key: TimelineEventKey) {
-    const next = {
-      ...aktivitas,
-      [key]: { completed: false, timestamp: null },
-    };
-    setEvents(next);
-    await persist(next);
+  async function resetEvent(event: ManualTimelineEventKey) {
+    const timeline = await postTimeline(institutionId, { operation: "reset", event }, operatorToken, operatorReady);
+    setEvents(mergeTimeline(timeline, emailSend, initialCompleted));
+    setMessage("Tersimpan ke backend");
   }
 
   return (
@@ -131,6 +128,7 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
       <div className="mt-5 grid gap-3 lg:grid-cols-2">
         {timelineEvents.map((event, index) => {
           const state = aktivitas[event.key];
+          const manualEvent = isManualTimelineEventKey(event.key) ? event.key : null;
 
           return (
             <div key={event.key} className="rounded-md border border-slate-200 bg-white p-4">
@@ -140,19 +138,24 @@ export default function CommunicationTimeline({ institutionId, outreachStatus }:
                   <h3 className="mt-2 text-sm font-semibold text-slate-950">{event.label}</h3>
                   <p className="mt-2 text-sm leading-6 text-slate-600">{event.description}</p>
                 </div>
-                <Badge tone={state.completed ? "success" : "neutral"}>{state.completed ? "Tercatat" : "Menunggu"}</Badge>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge tone={state.completed ? "success" : "neutral"}>{state.completed ? "Tercatat" : "Menunggu"}</Badge>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-400">{state.derived ? "Proyeksi outreach" : "Overlay manual"}</span>
+                </div>
               </div>
               <p className="mt-3 text-xs leading-5 text-slate-500">Waktu: {formatLocalWaktu(state.timestamp)}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => markComplete(event.key)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Tandai Selesai</button>
-                <button type="button" onClick={() => resetEvent(event.key)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Reset</button>
-              </div>
+              {manualEvent ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => markComplete(manualEvent)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Tandai Selesai</button>
+                  <button type="button" onClick={() => resetEvent(manualEvent)} className="h-8 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Reset</button>
+                </div>
+              ) : null}
             </div>
           );
         })}
       </div>
 
-      <p className="mt-4 text-xs leading-5 text-slate-500">{message}. Aktivitas timeline tidak menyimpulkan status tender.</p>
+      <p className="mt-4 text-xs leading-5 text-slate-500">{operatorReady ? message : "Token operator diperlukan"}. Aktivitas timeline tidak menyimpulkan status tender.</p>
     </Card>
   );
 }
