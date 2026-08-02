@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import math
 import os
 import re
@@ -17,6 +18,13 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from procurement_identity_resolution import (
+    EvidenceRecord,
+    ProcurementRecord,
+    canonical_json,
+    extract_procurement_status,
+    resolve_identity,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SIRUP_DB = ROOT.parent / "mia-automation" / "sirup_2026.duckdb"
@@ -91,6 +99,10 @@ OUTPUT_COLUMNS = [
     "method_from_sirup",
     "planned_month_or_date",
     "source_year",
+    "identity_status",
+    "identity_decision_id",
+    "identity_decision_evidence",
+    "manual_review_record",
     "factual_status",
     "evidence_source_type",
     "evidence_file",
@@ -102,19 +114,6 @@ OUTPUT_COLUMNS = [
     "manual_check_url_spse_nasional_search",
     "manual_check_notes",
 ]
-
-STATUS_PRIORITY = {
-    "FOUND_CONTRACT": 90,
-    "FOUND_COMPLETED": 85,
-    "FOUND_WINNER": 80,
-    "FOUND_CANCELLED_OR_FAILED": 75,
-    "FOUND_E_PURCHASING_PROCESS": 65,
-    "FOUND_TENDER_PROCESS": 60,
-    "FOUND_NON_TENDER_PROCESS": 60,
-    "NEEDS_MANUAL_CHECK": 40,
-    "PLANNING_ONLY_SIRUP": 0,
-}
-
 
 @dataclass
 class EvidenceRow:
@@ -129,6 +128,8 @@ class EvidenceRow:
     budget_value: float | None
     year: str
     factual_status: str
+    source_record_id: str = ""
+    collected_at: str = ""
 
 
 def clean(value: Any) -> str:
@@ -339,6 +340,7 @@ def rows_from_dataframe(df: pd.DataFrame, path: Path, max_rows: int = 10000) -> 
                 budget_value=parse_budget(row.get(budget_col)) if budget_col else None,
                 year=clean(row.get(year_col)) if year_col else "",
                 factual_status=status,
+                source_record_id=f"{path.name}#{idx + 2}",
             )
         )
     return evidence
@@ -454,7 +456,7 @@ def budget_similarity(a: float | None, b: float | None) -> float:
     return max(0.0, 1.0 - diff)
 
 
-def match_evidence(row: pd.Series, evidence_rows: list[EvidenceRow]) -> tuple[str, EvidenceRow | None, str, float, str]:
+def resolve_row(row: pd.Series, evidence_rows: list[EvidenceRow]):
     rup_id = clean(row.get("rup_id"))
     package_id = clean(row.get("package_id"))
     package_name = clean(row.get("paket"))
@@ -463,47 +465,47 @@ def match_evidence(row: pd.Series, evidence_rows: list[EvidenceRow]) -> tuple[st
     budget = parse_budget(row.get("pagu"))
     year = "2026" if "2026" in clean(row.get("pemilihan")) else ""
 
-    candidates = []
-    for ev in evidence_rows:
-        basis_parts = []
-        score = 0.0
-        if rup_id and ev.rup_id and normalize(rup_id) == normalize(ev.rup_id):
-            score += 0.95
-            basis_parts.append("rup_id exact")
-        if package_id and ev.package_id and normalize(package_id) == normalize(ev.package_id):
-            score += 0.85
-            basis_parts.append("package_id exact")
-        package_score = max(fuzzy_ratio(package_name, ev.package_name), fuzzy_ratio(package_name, ev.matched_text))
-        if package_score >= 0.82:
-            score += package_score * 0.45
-            basis_parts.append(f"package_name fuzzy {package_score:.2f}")
-        institution_score = max(fuzzy_ratio(institution, ev.institution_name), fuzzy_ratio(kldi, ev.institution_name), fuzzy_ratio(institution, ev.matched_text))
-        if institution_score >= 0.72:
-            score += institution_score * 0.25
-            basis_parts.append(f"institution fuzzy {institution_score:.2f}")
-        budget_score = budget_similarity(budget, ev.budget_value)
-        if budget_score >= 0.92:
-            score += 0.15
-            basis_parts.append(f"budget similar {budget_score:.2f}")
-        if year and ev.year and year in ev.year:
-            score += 0.10
-            basis_parts.append("year match")
-        elif year and year in ev.matched_text:
-            score += 0.05
-            basis_parts.append("year in evidence text")
-        if score >= 0.70:
-            candidates.append((score, ev, "; ".join(basis_parts)))
-
-    if not candidates:
-        return "PLANNING_ONLY_SIRUP", None, "no local evidence matched", 0.0, "No local SPSE/LPSE/e-purchasing evidence match found. Manual public-source check required before interpreting procurement progress."
-
-    candidates.sort(key=lambda item: (STATUS_PRIORITY.get(item[1].factual_status, 0), item[0]), reverse=True)
-    best = candidates[0]
-    ambiguous = len(candidates) > 1 and abs(candidates[0][0] - candidates[1][0]) < 0.08 and candidates[0][1].evidence_file != candidates[1][1].evidence_file
-    if ambiguous and best[0] < 1.0:
-        return "NEEDS_MANUAL_CHECK", best[1], best[2] + "; ambiguous competing evidence", round(best[0], 3), "Multiple local evidence candidates were close; verify manually before assigning factual status."
-    reason = f"Matched local evidence by {best[2]} with conservative confidence {best[0]:.2f}."
-    return best[1].factual_status, best[1], best[2], round(min(best[0], 1.0), 3), reason
+    sirup_record = ProcurementRecord(
+        record_id=rup_id or package_id,
+        rup_id=rup_id,
+        package_id=package_id,
+        package_name=package_name,
+        institution=kldi,
+        satker=institution,
+        year=int(year) if year else None,
+        budget=budget,
+        procurement_method=clean(row.get("metode")),
+        location=clean(row.get("lokasi")),
+        category=clean(row.get("jenisPengadaan")),
+    )
+    candidates = [
+        EvidenceRecord(
+            candidate_id=ev.source_record_id or f"{ev.evidence_file}|{ev.url_or_reference}",
+            package_name=ev.package_name,
+            institution=ev.institution_name,
+            year=int(ev.year[:4]) if ev.year[:4].isdigit() else None,
+            budget=ev.budget_value,
+            evidence_type=ev.source_type,
+            source_url=ev.url_or_reference,
+            source_file=ev.evidence_file,
+            source_record_id=ev.source_record_id,
+            collected_at=ev.collected_at,
+            provenance="Local public procurement evidence export",
+            source_status=ev.factual_status,
+        )
+        for ev in evidence_rows
+    ]
+    identity = resolve_identity(sirup_record, candidates, dataset_version="SPRINT1_CONTROLLED_LOCAL_DATASET")
+    procurement = extract_procurement_status(identity, candidates)
+    selected = next(
+        (
+            ev
+            for ev in evidence_rows
+            if (ev.source_record_id or f"{ev.evidence_file}|{ev.url_or_reference}") == identity.selected_candidate_id
+        ),
+        None,
+    ) if identity.identity_status in {"PROBABLE_MATCH", "CONFIRMED_MATCH"} else None
+    return identity, procurement, selected
 
 
 def sirup_url(rup_id: str, package_name: str) -> str:
@@ -519,7 +521,7 @@ def build_crosscheck(sirup: pd.DataFrame, evidence_rows: list[EvidenceRow]) -> p
     output = []
     for _, row in sirup.iterrows():
         province, city = parse_location(clean(row.get("lokasi")))
-        status, evidence, basis, confidence, notes = match_evidence(row, evidence_rows)
+        identity, procurement, evidence = resolve_row(row, evidence_rows)
         package_name = clean(row.get("paket"))
         rup_id = clean(row.get("rup_id"))
         output.append(
@@ -535,16 +537,20 @@ def build_crosscheck(sirup: pd.DataFrame, evidence_rows: list[EvidenceRow]) -> p
                 "method_from_sirup": clean(row.get("metode")),
                 "planned_month_or_date": clean(row.get("pemilihan")) or clean(row.get("idBulan")),
                 "source_year": 2026 if "2026" in clean(row.get("pemilihan")) else "",
-                "factual_status": status,
+                "identity_status": identity.identity_status,
+                "identity_decision_id": identity.decision_evidence["decision_id"],
+                "identity_decision_evidence": canonical_json(identity.decision_evidence),
+                "manual_review_record": canonical_json(identity.manual_review_record) if identity.manual_review_record else "",
+                "factual_status": procurement["normalized_status"],
                 "evidence_source_type": evidence.source_type if evidence else "NO_LOCAL_EVIDENCE",
                 "evidence_file": evidence.evidence_file if evidence else "",
                 "evidence_url_or_reference": evidence.url_or_reference if evidence else "",
                 "evidence_matched_text": evidence.matched_text if evidence else "",
-                "match_basis": basis,
-                "match_confidence": confidence,
+                "match_basis": ", ".join(identity.match_signals),
+                "match_confidence": identity.identity_confidence,
                 "manual_check_url_sirup": sirup_url(rup_id, package_name),
                 "manual_check_url_spse_nasional_search": spse_search_url(package_name),
-                "manual_check_notes": notes,
+                "manual_check_notes": identity.manual_review_reason or identity.decision_explanation,
             }
         )
     return pd.DataFrame(output, columns=OUTPUT_COLUMNS)
@@ -594,7 +600,7 @@ def methodology_rows(args: argparse.Namespace, sirup_fields: list[str], evidence
         ["Interpretation of PLANNING_ONLY_SIRUP", "Only means no local evidence was found; it does not mean not purchased or still open."],
         ["Evidence rows loaded", evidence_count],
         ["Status terms searched", ", ".join(STATUS_TERMS)],
-        ["Matching basis", "RUP ID, package ID, fuzzy package name, institution/work unit normalized name, budget similarity, year similarity."],
+        ["Matching basis", "Locked Identity Signal Registry; cross-namespace numeric equality is not an identity signal."],
         ["No scraping/API rule", "No external websites or APIs are called. Manual search URLs are references only."],
         ["Default row limit", args.limit],
         ["Filters", f"year={args.year or ''}; keyword={args.keyword or ''}; institution={args.institution or ''}; package_name={args.package_name or ''}; month={args.month or ''}"],
@@ -654,7 +660,10 @@ def create_excel(crosscheck: pd.DataFrame, source_files: list[dict[str, Any]], a
             row[1].number_format = "0.0%"
 
     manual = wb.create_sheet("Manual_Check_Queue")
-    manual_df = crosscheck[crosscheck["factual_status"].isin(["PLANNING_ONLY_SIRUP", "NEEDS_MANUAL_CHECK"])].copy()
+    manual_df = crosscheck[
+        crosscheck["identity_status"].eq("NEEDS_MANUAL_REVIEW")
+        | crosscheck["factual_status"].eq("SIRUP_PLANNING_ONLY")
+    ].copy()
     manual_cols = [
         "institution_name",
         "work_unit/satker",
@@ -663,6 +672,7 @@ def create_excel(crosscheck: pd.DataFrame, source_files: list[dict[str, Any]], a
         "budget_value",
         "planned_month_or_date",
         "factual_status",
+        "identity_status",
         "manual_check_url_sirup",
         "manual_check_url_spse_nasional_search",
         "manual_check_notes",
@@ -725,8 +735,23 @@ def main() -> None:
     explicit_files = [Path(path) for path in args.evidence_files]
     evidence_rows, source_files = load_evidence(roots, explicit_files=explicit_files, scan_generic_content=args.scan_generic_content)
     crosscheck = build_crosscheck(sirup, evidence_rows)
+    output_path = Path(args.output)
+    decision_sidecar = output_path.with_suffix(".identity-decisions.jsonl")
+    decision_sidecar.parent.mkdir(parents=True, exist_ok=True)
+    decision_lines = sorted(crosscheck["identity_decision_evidence"].tolist())
+    decision_sidecar.write_text("\n".join(decision_lines) + "\n", encoding="utf-8")
+    review_sidecar = output_path.with_suffix(".manual-review-records.jsonl")
+    review_lines = sorted(value for value in crosscheck["manual_review_record"].tolist() if value)
+    review_sidecar.write_text(("\n".join(review_lines) + "\n") if review_lines else "", encoding="utf-8")
+    crosscheck["identity_decision_evidence"] = crosscheck["identity_decision_id"].map(
+        lambda value: f"{decision_sidecar.name}#{value}"
+    )
+    crosscheck["manual_review_record"] = crosscheck["manual_review_record"].map(
+        lambda value: review_sidecar.name if value else ""
+    )
     create_excel(crosscheck, source_files, args, sirup_fields, len(evidence_rows))
-    validate_output(Path(args.output))
+    print("identity decision evidence digest:", hashlib.sha256(decision_sidecar.read_bytes()).hexdigest())
+    validate_output(output_path)
 
 
 if __name__ == "__main__":

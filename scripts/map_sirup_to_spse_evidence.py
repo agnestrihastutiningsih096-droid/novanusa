@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -15,6 +16,13 @@ import duckdb
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
+from procurement_identity_resolution import (
+    EvidenceRecord,
+    ProcurementRecord,
+    canonical_json,
+    extract_procurement_status,
+    resolve_identity,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +46,10 @@ OUTPUT_COLUMNS = [
     'spse_hps',
     'spse_source_type',
     'spse_stage_or_status',
+    'identity_status',
+    'identity_decision_id',
+    'identity_decision_evidence',
+    'manual_review_record',
     'match_level',
     'match_reason',
     'evidence_status',
@@ -61,6 +73,10 @@ class SirupRow:
     institution_alt: str
     pagu: float | None
     year: int | None
+    satker: str = ''
+    procurement_method: str = ''
+    location: str = ''
+    category: str = ''
 
 
 @dataclass
@@ -218,6 +234,10 @@ def to_sirup_rows(df: pd.DataFrame) -> list[SirupRow]:
                 institution_alt=institution_satker if institution_kldi else institution_kldi,
                 pagu=parse_budget(row.get('pagu')),
                 year=parse_year(row.get('pemilihan')),
+                satker=institution_satker,
+                procurement_method=clean(row.get('metode')),
+                location=clean(row.get('lokasi')),
+                category=clean(row.get('jenisPengadaan')),
             )
         )
     return rows
@@ -242,12 +262,6 @@ def to_spse_rows(df: pd.DataFrame) -> list[SpseRow]:
             )
         )
     return rows
-
-
-def exact_match(sirup: SirupRow, spse: SpseRow) -> bool:
-    candidates = [sirup.rup_id, sirup.package_id]
-    spse_code = normalize(spse.package_code)
-    return any(code and normalize(code) == spse_code for code in candidates)
 
 
 def same_year(sirup: SirupRow, spse: SpseRow) -> bool:
@@ -275,74 +289,60 @@ def budget_score(sirup: SirupRow, spse: SpseRow) -> float:
     return budget_similarity(sirup.pagu, spse.budget_value)
 
 
-def best_match(sirup: SirupRow, evidence: list[SpseRow]) -> tuple[str, SpseRow | None, str]:
-    exact_candidates = [spse for spse in evidence if exact_match(sirup, spse)]
-    if exact_candidates:
-        best = exact_candidates[0]
-        return 'exact', best, 'Exact code match on SiRUP RUP/package code and SPSE package code.'
-
-    scored: list[tuple[float, SpseRow, dict[str, float], list[str]]] = []
-    for spse in evidence:
-        name = name_score(sirup, spse)
-        inst = same_institution_score(sirup, spse)
-        year_ok = same_year(sirup, spse)
-        budget = budget_score(sirup, spse)
-        signals = []
-        score = 0.0
-        if name >= 0.80:
-            score += 0.45 * name
-            signals.append(f'name similarity {name:.2f}')
-        elif name >= 0.62:
-            score += 0.25 * name
-            signals.append(f'name similarity {name:.2f}')
-        if inst >= 0.90:
-            score += 0.25 * inst
-            signals.append(f'institution match {inst:.2f}')
-        elif inst >= 0.75:
-            score += 0.15 * inst
-            signals.append(f'institution match {inst:.2f}')
-        if year_ok:
-            score += 0.10
-            signals.append('year match')
-        if budget >= 0.85:
-            score += 0.20
-            signals.append(f'budget close {budget:.2f}')
-        elif budget >= 0.70:
-            score += 0.10
-            signals.append(f'budget close {budget:.2f}')
-        scored.append((score, spse, {'name': name, 'institution': inst, 'budget': budget, 'year_ok': 1.0 if year_ok else 0.0}, signals))
-
-    scored.sort(key=lambda item: (item[0], item[2]['name'], item[2]['institution'], item[2]['budget']), reverse=True)
-    if not scored:
-        return 'no_match', None, 'No SPSE evidence available.'
-
-    best_score, best, metrics, signals = scored[0]
-    second_score = scored[1][0] if len(scored) > 1 else 0.0
-    if best_score >= 0.80 and metrics['name'] >= 0.80 and metrics['institution'] >= 0.85 and metrics['year_ok'] >= 1.0:
-        if second_score and abs(best_score - second_score) < 0.05:
-            return 'weak', best, 'Close strong candidates require manual review.'
-        reason = '; '.join(signals) if signals else 'Strong match conditions met.'
-        return 'strong', best, reason
-
-    if best_score >= 0.45 and (metrics['name'] >= 0.62 or metrics['institution'] >= 0.75 or metrics['budget'] >= 0.70):
-        reason = '; '.join(signals) if signals else 'Weak candidate needs manual review.'
-        return 'weak', best, reason
-
-    return 'no_match', None, 'No sufficiently strong SPSE evidence candidate found.'
+def resolve_match(sirup: SirupRow, evidence: list[SpseRow]):
+    record = ProcurementRecord(
+        record_id=sirup.rup_id or sirup.package_id,
+        rup_id=sirup.rup_id,
+        package_id=sirup.package_id,
+        package_name=sirup.package_name,
+        institution=sirup.institution_name,
+        satker=sirup.satker,
+        year=sirup.year,
+        budget=sirup.pagu,
+        procurement_method=sirup.procurement_method,
+        location=sirup.location,
+        category=sirup.category,
+    )
+    candidates = [
+        EvidenceRecord(
+            candidate_id=spse.package_code or f"{spse.raw_file_path}|{spse.source_url}",
+            package_name=spse.package_name,
+            institution=spse.institution_name,
+            year=spse.fiscal_year,
+            budget=spse.budget_value,
+            evidence_type=spse.source_type,
+            source_url=spse.source_url,
+            source_file=spse.raw_file_path,
+            source_record_id=spse.package_code,
+            collected_at=spse.collected_at,
+            provenance="SPSE parsed evidence dataset",
+            source_status=spse.stage_or_status,
+        )
+        for spse in evidence
+    ]
+    identity = resolve_identity(record, candidates, dataset_version="SPRINT1_CONTROLLED_SPSE_DATASET")
+    procurement = extract_procurement_status(identity, candidates)
+    selected = next(
+        (spse for spse in evidence if (spse.package_code or f"{spse.raw_file_path}|{spse.source_url}") == identity.selected_candidate_id),
+        None,
+    ) if identity.identity_status in {'PROBABLE_MATCH', 'CONFIRMED_MATCH'} else None
+    return identity, procurement, selected
 
 
 def evidence_status_for(match_level: str) -> str:
-    if match_level in {'exact', 'strong'}:
+    if match_level in {'PROBABLE_MATCH', 'CONFIRMED_MATCH'}:
         return 'SPSE_FOUND'
-    if match_level == 'weak':
+    if match_level == 'NEEDS_MANUAL_REVIEW':
         return 'NEEDS_MANUAL_REVIEW'
-    return 'PLANNED_ONLY'
+    return 'SIRUP_PLANNING_ONLY'
 
 
 def build_mapping(sirup_rows: list[SirupRow], evidence: list[SpseRow]) -> pd.DataFrame:
     output = []
     for sirup in sirup_rows:
-        level, spse, reason = best_match(sirup, evidence)
+        identity, procurement, spse = resolve_match(sirup, evidence)
+        level = identity.identity_status
+        reason = identity.decision_explanation
         output.append(
             {
                 'sirup_package_id': sirup.package_id or sirup.rup_id,
@@ -355,9 +355,13 @@ def build_mapping(sirup_rows: list[SirupRow], evidence: list[SpseRow]) -> pd.Dat
                 'spse_hps': spse.hps_or_pagu if spse else '',
                 'spse_source_type': spse.source_type if spse else '',
                 'spse_stage_or_status': spse.stage_or_status if spse else '',
+                'identity_status': level,
+                'identity_decision_id': identity.decision_evidence['decision_id'],
+                'identity_decision_evidence': canonical_json(identity.decision_evidence),
+                'manual_review_record': canonical_json(identity.manual_review_record) if identity.manual_review_record else '',
                 'match_level': level,
                 'match_reason': reason,
-                'evidence_status': evidence_status_for(level),
+                'evidence_status': procurement['normalized_status'] if spse else evidence_status_for(level),
                 'evidence_source_url': spse.source_url if spse else '',
                 'collected_at': spse.collected_at if spse else '',
             }
@@ -398,10 +402,10 @@ def build_summary(mapping: pd.DataFrame, sirup_count: int, evidence_count: int, 
         'evidence_status_counts': mapping['evidence_status'].value_counts(dropna=False).to_dict(),
         'source_type_counts': mapping['spse_source_type'].value_counts(dropna=False).to_dict(),
         'notes': [
-            'Exact match is code-based only.',
-            'Strong match requires package name, institution, year, and budget signals.',
-            'Weak match is a manual review candidate, not an opportunity score.',
-            'No score columns are produced.',
+            'Cross-namespace numeric equality is never accepted as identity proof.',
+            'Classification is authorized by registered signals after HARD-conflict rejection.',
+            'Identity confidence is diagnostic only and procurement status is evaluated afterward.',
+            'Canonical decision evidence is stored in the adjacent JSONL sidecar.',
         ],
     }
 
@@ -460,6 +464,18 @@ def main() -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.summary.parent.mkdir(parents=True, exist_ok=True)
+    decision_sidecar = args.output.with_suffix('.identity-decisions.jsonl')
+    decision_lines = sorted(mapping['identity_decision_evidence'].tolist())
+    decision_sidecar.write_text('\n'.join(decision_lines) + '\n', encoding='utf-8')
+    review_sidecar = args.output.with_suffix('.manual-review-records.jsonl')
+    review_lines = sorted(value for value in mapping['manual_review_record'].tolist() if value)
+    review_sidecar.write_text(('\n'.join(review_lines) + '\n') if review_lines else '', encoding='utf-8')
+    mapping['identity_decision_evidence'] = mapping['identity_decision_id'].map(
+        lambda value: f'{decision_sidecar.name}#{value}'
+    )
+    mapping['manual_review_record'] = mapping['manual_review_record'].map(
+        lambda value: review_sidecar.name if value else ''
+    )
     with pd.ExcelWriter(args.output, engine='openpyxl') as writer:
         mapping.to_excel(writer, index=False, sheet_name='mapping')
         pd.DataFrame(
@@ -488,6 +504,11 @@ def main() -> None:
     normalize_output_sheet(args.output)
 
     summary = build_summary(mapping, len(sirup_rows), len(spse_rows), args, sirup_db, evidence_files)
+    summary['identity_decision_evidence_file'] = str(decision_sidecar)
+    summary['identity_decision_evidence_digest'] = hashlib.sha256(
+        decision_sidecar.read_bytes()
+    ).hexdigest()
+    summary['manual_review_records_file'] = str(review_sidecar)
     args.summary.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f'mapped rows: {len(mapping)}')
     print(f'output: {args.output}')
