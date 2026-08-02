@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { persistOperatorToken, removeOperatorToken, restoreOperatorToken } from "@/lib/operator-session";
 
 type InstitutionOperatorContextValue = {
   operatorToken: string;
@@ -16,6 +17,16 @@ export function InstitutionOperatorProvider({ children }: { children: ReactNode 
   const [operatorToken, setOperatorToken] = useState("");
   const [operatorReady, setOperatorReady] = useState(false);
 
+  useEffect(() => {
+    const restoreTimer = window.setTimeout(() => {
+      const token = restoreOperatorToken();
+      if (!token) return;
+      setOperatorToken(token);
+      setOperatorReady(true);
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
   const value = useMemo<InstitutionOperatorContextValue>(() => ({
     operatorToken,
     operatorReady,
@@ -26,11 +37,13 @@ export function InstitutionOperatorProvider({ children }: { children: ReactNode 
     activateOperator() {
       const token = operatorToken.trim();
       if (!token) return false;
+      persistOperatorToken(token);
       setOperatorToken(token);
       setOperatorReady(true);
       return true;
     },
     deactivateOperator() {
+      removeOperatorToken();
       setOperatorToken("");
       setOperatorReady(false);
     },

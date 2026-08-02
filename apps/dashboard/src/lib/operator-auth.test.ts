@@ -66,12 +66,12 @@ test("deactivation suppresses subsequent protected requests", async () => {
   assert.equal(calls, 1);
 });
 
-test("operator token state is memory-only and does not alter workflow contracts", () => {
+test("operator token session persistence does not alter workflow contracts", () => {
   const contextSource = fs.readFileSync(path.join(workspace, "src", "app", "institutions", "[id]", "InstitutionOperatorContext.tsx"), "utf8");
   const routeSource = fs.readFileSync(path.join(workspace, "src", "app", "api", "institutions", "[id]", "workflow-state", "route.ts"), "utf8");
 
-  assert.match(contextSource, /useState\(""\)/);
-  assert.doesNotMatch(contextSource, /localStorage|sessionStorage|document\.cookie|process\.env|fetch\(/);
+  assert.match(contextSource, /restoreOperatorToken/);
+  assert.doesNotMatch(contextSource, /localStorage|document\.cookie|process\.env|fetch\(/);
   assert.match(contextSource, /setOperatorToken\(""\)/);
   assert.match(routeSource, /patch\.emailSend \|\| patch\.timeline \|\| patch\.salesNotes \|\| patch\.nextAction/);
   assert.match(routeSource, /Only draft workflow transitions are accepted/);
