@@ -23,6 +23,10 @@ export type CommunicationOutcomeResult = {
   audit: { eventId: string };
 };
 
+export type CommunicationOutcomeReadResult = {
+  data: CommunicationOutcomeRecord | null;
+};
+
 export type CommunicationOutcomeAppend = {
   commandId: string;
   canonicalContent: string;

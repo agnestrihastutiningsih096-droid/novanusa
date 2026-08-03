@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CommunicationOutcomeAppend, CommunicationOutcomeAppendResult } from "./communication-outcome.ts";
-import { executeCommunicationOutcomeCommand } from "./communication-outcome-command.ts";
+import type { CommunicationOutcomeAppend, CommunicationOutcomeAppendResult, CommunicationOutcomeRecord } from "./communication-outcome.ts";
+import { executeCommunicationOutcomeCommand, executeCommunicationOutcomeRead } from "./communication-outcome-command.ts";
+import { findLatestGenericCommunicationOutcome } from "./communication-outcome-store.ts";
 
 const commandOne = "11111111-1111-4111-8111-111111111111";
 
@@ -124,4 +125,61 @@ test("rejects an unauthorized request before validation or persistence", async (
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: { code: "UNAUTHORIZED", message: "Communication outcome could not be recorded." } });
   assert.equal(state.appends.length, 0);
+});
+
+const genericRecord: CommunicationOutcomeRecord = {
+  id: "outcome-generic",
+  institutionId: "inst-1",
+  procurementIdentityId: null,
+  outcome: "interested",
+  note: null,
+  actor: "operator-1",
+  recordedAt: "2026-08-03T01:00:00.000Z",
+};
+
+function readRequest(authenticated = true) {
+  return new Request("http://localhost/api/institutions/inst-1/communication-outcomes", {
+    headers: authenticated ? { "x-test-operator": "yes" } : {},
+  });
+}
+
+test("GET returns the latest authoritative generic outcome", async () => {
+  const response = executeCommunicationOutcomeRead(readRequest(), "inst-1", {
+    getOperatorActor: () => "operator-1",
+    institutionExists: () => true,
+    getLatestGeneric: () => genericRecord,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { data: genericRecord });
+});
+
+test("GET returns null when the generic thread is empty", async () => {
+  const response = executeCommunicationOutcomeRead(readRequest(), "inst-1", {
+    getOperatorActor: () => "operator-1",
+    institutionExists: () => true,
+    getLatestGeneric: () => null,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { data: null });
+});
+
+test("GET rejects an unauthorized request with the deterministic error contract", async () => {
+  let reads = 0;
+  const response = executeCommunicationOutcomeRead(readRequest(false), "inst-1", {
+    getOperatorActor: () => null,
+    institutionExists: () => true,
+    getLatestGeneric: () => { reads += 1; return genericRecord; },
+  });
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: { code: "UNAUTHORIZED", message: "Communication outcome could not be recorded." } });
+  assert.equal(reads, 0);
+});
+
+test("procurement-specific records are never returned as generic", () => {
+  const records: CommunicationOutcomeRecord[] = [
+    genericRecord,
+    { ...genericRecord, id: "outcome-procurement", procurementIdentityId: "proc-1", outcome: "not_interested", recordedAt: "2026-08-03T02:00:00.000Z" },
+  ];
+  assert.deepEqual(findLatestGenericCommunicationOutcome(records, "inst-1"), genericRecord);
+  assert.equal(findLatestGenericCommunicationOutcome(records, "inst-2"), null);
 });

@@ -69,6 +69,17 @@ export function getCommunicationOutcomeCommand(commandId: string): Communication
   return { canonicalContent: command.canonicalContent, result: { data: record, audit: { eventId: audit.eventId } } };
 }
 
+export function findLatestGenericCommunicationOutcome(
+  outcomes: CommunicationOutcomeAppend["record"][],
+  institutionId: string,
+) {
+  return outcomes.findLast((record) => record.institutionId === institutionId && record.procurementIdentityId === null) ?? null;
+}
+
+export function getLatestGenericCommunicationOutcome(institutionId: string) {
+  return findLatestGenericCommunicationOutcome(readStore().outcomes, institutionId);
+}
+
 export function getCommunicationOutcomeStorePath() {
   return storePath;
 }

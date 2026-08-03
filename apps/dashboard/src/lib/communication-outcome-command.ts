@@ -5,6 +5,7 @@ import {
   type CommunicationOutcomeAppend,
   type CommunicationOutcomeAppendResult,
   type CommunicationOutcomePriorCommand,
+  type CommunicationOutcomeRecord,
 } from "./communication-outcome.ts";
 
 type Dependencies = {
@@ -24,6 +25,22 @@ function error(status: number, code: string, fields?: string[]) {
     { error: { code, message, ...(fields ? { details: { fields } } : {}) } },
     { status },
   );
+}
+
+type ReadDependencies = {
+  getOperatorActor: (request: Request) => string | null;
+  institutionExists: (institutionId: string) => boolean;
+  getLatestGeneric: (institutionId: string) => CommunicationOutcomeRecord | null;
+};
+
+export function executeCommunicationOutcomeRead(request: Request, institutionId: string, dependencies: ReadDependencies) {
+  if (!dependencies.getOperatorActor(request)) return error(401, "UNAUTHORIZED");
+  if (!dependencies.institutionExists(institutionId)) return error(404, "INSTITUTION_NOT_FOUND");
+  try {
+    return Response.json({ data: dependencies.getLatestGeneric(institutionId) });
+  } catch {
+    return error(500, "PERSISTENCE_FAILED");
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

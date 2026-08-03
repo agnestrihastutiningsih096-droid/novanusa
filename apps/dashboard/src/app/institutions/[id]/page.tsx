@@ -8,6 +8,7 @@ import DraftGenerator from "./DraftGenerator";
 import CommunicationTimeline from "./CommunicationTimeline";
 import SalesNotes from "./SalesNotes";
 import NextAction from "./NextAction";
+import CommunicationOutcome from "./CommunicationOutcome";
 import ContactVerificationAction from "./ContactVerificationAction";
 import { InstitutionOperatorProvider } from "./InstitutionOperatorContext";
 import { CONTACT_VERIFICATION_SOURCE, createContactFingerprint, getMatchingContactVerification } from "@/lib/contact-verification";
@@ -270,6 +271,8 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
           <SalesNotes institutionId={institution.institution_id} />
           <NextAction institutionId={institution.institution_id} />
         </section>
+
+        <CommunicationOutcome institutionId={institution.institution_id} />
 
 
         <CommunicationTimeline institutionId={institution.institution_id} outreachStatus={institution.outreach_status} />
