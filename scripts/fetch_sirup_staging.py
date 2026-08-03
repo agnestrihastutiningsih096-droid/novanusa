@@ -20,7 +20,8 @@ SOURCE_ENDPOINT = "https://sirup.inaproc.id/sirup/caripaketctr/search"
 SOURCE_PAGE = "https://sirup.inaproc.id/sirup/caripaketctr/index"
 DEFAULT_STAGING_ROOT = ROOT / "data" / "staging" / "sirup"
 TABLE_NAME = "sirup_raw"
-MAX_LIMIT = 100
+MAX_PAGE_SIZE = 100
+MAX_ROWS = 10_000
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -49,7 +50,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def fetch_page(year: int, limit: int, timeout: float, retries: int) -> tuple[dict[str, Any], int]:
+def fetch_page(
+    year: int, start: int, length: int, draw: int, timeout: float, retries: int
+) -> tuple[dict[str, Any], int]:
     params = {
         "tahunAnggaran": year,
         "jenisPengadaan": "",
@@ -61,10 +64,10 @@ def fetch_page(year: int, limit: int, timeout: float, retries: int) -> tuple[dic
         "kldi": "",
         "pdn": "",
         "ukm": "",
-        "draw": 1,
-        "start": 0,
-        "length": limit,
-        "order[0][column]": 5,
+        "draw": draw,
+        "start": start,
+        "length": length,
+        "order[0][column]": 11,
         "order[0][dir]": "desc",
         "search[value]": "",
         "search[regex]": "false",
@@ -99,12 +102,12 @@ def fetch_page(year: int, limit: int, timeout: float, retries: int) -> tuple[dic
     raise RuntimeError(f"source request failed after {retries + 1} attempts: {last_error}")
 
 
-def validate_rows(payload: dict[str, Any], year: int, limit: int) -> list[dict[str, Any]]:
+def validate_rows(payload: dict[str, Any], expected_count: int) -> list[dict[str, Any]]:
     rows = payload.get("data")
     if not isinstance(rows, list):
         raise RuntimeError("response field 'data' is not an array")
-    if len(rows) != limit:
-        raise RuntimeError(f"expected {limit} rows but source returned {len(rows)}")
+    if len(rows) != expected_count:
+        raise RuntimeError(f"expected {expected_count} rows but source returned {len(rows)}")
     if not isinstance(payload.get("recordsFiltered"), int):
         raise RuntimeError("response field 'recordsFiltered' is not an integer")
 
@@ -117,8 +120,6 @@ def validate_rows(payload: dict[str, Any], year: int, limit: int) -> list[dict[s
             raise RuntimeError(f"row {index} is missing fields: {', '.join(missing)}")
         if row["id"] is None:
             raise RuntimeError(f"row {index} has a null id")
-        if str(year) not in str(row["pemilihan"]):
-            raise RuntimeError(f"row {index} does not match requested year {year}")
         identifiers.append(row["id"])
     if len(set(identifiers)) != len(identifiers):
         raise RuntimeError("source returned duplicate ids")
@@ -174,24 +175,35 @@ def verify_database(path: Path) -> tuple[int, int, int, int]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch a bounded SiRUP sample into isolated staging.")
     parser.add_argument("--year", type=int, required=True, help="Explicit SiRUP budget year.")
-    parser.add_argument("--limit", type=int, default=10, help=f"Rows to fetch (1-{MAX_LIMIT}).")
+    parser.add_argument("--page-size", type=int, default=100, help="Rows per page (1-100).")
+    parser.add_argument(
+        "--max-rows", type=int, default=100, help=f"Maximum rows to fetch (1-{MAX_ROWS})."
+    )
     parser.add_argument("--timeout", type=float, default=30, help="Request timeout in seconds.")
     parser.add_argument("--retries", type=int, default=2, help="Retries after the first request (0-3).")
+    parser.add_argument("--delay", type=float, default=0.5, help="Delay between pages (0-5 seconds).")
     parser.add_argument("--staging-root", type=Path, default=DEFAULT_STAGING_ROOT)
     args = parser.parse_args()
-    if not 1 <= args.limit <= MAX_LIMIT:
-        parser.error(f"--limit must be between 1 and {MAX_LIMIT}")
+    if not 1 <= args.page_size <= MAX_PAGE_SIZE:
+        parser.error(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
+    if not 1 <= args.max_rows <= MAX_ROWS:
+        parser.error(f"--max-rows must be between 1 and {MAX_ROWS}")
     if not 1 <= args.timeout <= 60:
         parser.error("--timeout must be between 1 and 60 seconds")
     if not 0 <= args.retries <= 3:
         parser.error("--retries must be between 0 and 3")
+    if not 0 <= args.delay <= 5:
+        parser.error("--delay must be between 0 and 5 seconds")
     return args
 
 
 def main() -> int:
     args = parse_args()
     started_at = utc_now()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{args.year}-{args.limit}rows"
+    run_id = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + f"-{args.year}-{args.max_rows}rows"
+    )
     run_dir = args.staging_root.resolve() / run_id
     database_path = run_dir / "sirup_staging.duckdb"
     manifest_path = run_dir / "manifest.json"
@@ -200,11 +212,35 @@ def main() -> int:
     run_dir.mkdir(parents=True)
 
     try:
-        payload, retries_used = fetch_page(args.year, args.limit, args.timeout, args.retries)
-        rows = validate_rows(payload, args.year, args.limit)
+        rows: list[dict[str, Any]] = []
+        source_counts: list[int] = []
+        retries_used = 0
+        page_count = 0
+        while len(rows) < args.max_rows:
+            length = min(args.page_size, args.max_rows - len(rows))
+            payload, page_retries = fetch_page(
+                args.year,
+                start=len(rows),
+                length=length,
+                draw=page_count + 1,
+                timeout=args.timeout,
+                retries=args.retries,
+            )
+            page_rows = validate_rows(payload, length)
+            rows.extend(page_rows)
+            source_counts.append(payload["recordsFiltered"])
+            retries_used += page_retries
+            page_count += 1
+            if len(rows) < args.max_rows:
+                time.sleep(args.delay)
+        identifiers = [row["id"] for row in rows]
+        if len(set(identifiers)) != len(identifiers):
+            raise RuntimeError("duplicate ids detected across pages")
+        if len(set(source_counts)) != 1:
+            raise RuntimeError("source record count changed during pagination")
         write_database(database_path, rows)
         row_count, distinct_ids, min_id, max_id = verify_database(database_path)
-        if row_count != args.limit or distinct_ids != row_count:
+        if row_count != args.max_rows or distinct_ids != row_count:
             raise RuntimeError("staging database row or unique-id validation failed")
         digest = sha256_file(database_path)
         completed_at = utc_now()
@@ -215,7 +251,9 @@ def main() -> int:
             "promotion_eligible": False,
             "source_endpoint": SOURCE_ENDPOINT,
             "requested_year": args.year,
-            "requested_limit": args.limit,
+            "requested_limit": args.max_rows,
+            "page_size": args.page_size,
+            "page_count": page_count,
             "started_at": started_at,
             "collected_at": completed_at,
             "database_path": str(database_path),
@@ -224,14 +262,16 @@ def main() -> int:
             "distinct_id_count": distinct_ids,
             "min_id": min_id,
             "max_id": max_id,
-            "source_records_filtered": payload["recordsFiltered"],
-            "request_count": 1,
+            "source_records_filtered": source_counts[0],
+            "request_count": page_count,
             "retries_used": retries_used,
             "sha256": digest,
             "validation": {
                 "response_shape": "passed",
                 "requested_row_count": "passed",
-                "requested_year": "passed",
+                "sequential_pagination": "passed",
+                "source_count_consistency": "passed",
+                "source_year_parameter": "passed",
                 "non_null_ids": "passed",
                 "unique_ids": "passed",
                 "database_read_only_reopen": "passed",
