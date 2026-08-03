@@ -8,6 +8,8 @@ from typing import Any
 
 import duckdb
 
+from compare_sirup_staging import compare
+
 
 DATABASE_NAME = "sirup_staging.duckdb"
 MANIFEST_NAME = "manifest.json"
@@ -106,6 +108,12 @@ def evaluate(run_dir: Path, comparison_path: Path) -> dict[str, Any]:
     manifest = load_json(manifest_path)
     database = inspect_database(database_path)
     comparison = load_json(comparison_path)
+    expected_comparison = None
+    if comparison and isinstance(comparison.get("baseline"), str):
+        try:
+            expected_comparison = compare(Path(comparison["baseline"]), database_path)
+        except (duckdb.Error, OSError, RuntimeError, TypeError, ValueError):
+            pass
 
     source_count = manifest.get("source_records_filtered") if manifest else None
     validation = manifest.get("validation") if manifest else None
@@ -127,13 +135,8 @@ def evaluate(run_dir: Path, comparison_path: Path) -> dict[str, Any]:
     )
     comparison_valid = bool(
         comparison
-        and comparison.get("status") == "passed"
-        and Path(str(comparison.get("candidate", ""))).resolve() == database_path.resolve()
-        and isinstance(comparison.get("row_count_difference"), int)
-        and isinstance(comparison.get("ids_added_count"), int)
-        and isinstance(comparison.get("ids_missing_count"), int)
-        and isinstance(comparison.get("ids_changed_count"), int)
-        and isinstance(comparison.get("source_count_difference"), int)
+        and expected_comparison
+        and comparison == {"status": "passed", **expected_comparison}
     )
 
     gates = {

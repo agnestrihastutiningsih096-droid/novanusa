@@ -15,6 +15,14 @@ MANIFEST_NAME = "manifest.json"
 TABLE_NAME = "sirup_raw"
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def resolve_snapshot(path: Path) -> tuple[Path, Path]:
     resolved = path.resolve()
     if resolved.is_dir():
@@ -100,6 +108,8 @@ def compare(baseline: Path, candidate: Path) -> dict[str, Any]:
     return {
         "baseline": str(baseline_db),
         "candidate": str(candidate_db),
+        "baseline_sha256": sha256_file(baseline_db),
+        "candidate_sha256": sha256_file(candidate_db),
         "baseline_row_count": len(baseline_rows),
         "candidate_row_count": len(candidate_rows),
         "row_count_difference": len(candidate_rows) - len(baseline_rows),
@@ -122,6 +132,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("baseline", type=Path, help="Baseline staging run directory or DuckDB.")
     parser.add_argument("candidate", type=Path, help="Candidate staging run directory or DuckDB.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="JSON report path.",
+    )
     return parser.parse_args()
 
 
@@ -129,10 +145,16 @@ def main() -> int:
     args = parse_args()
     try:
         result = compare(args.baseline, args.candidate)
+        output_path = args.output.resolve()
+        report = {"status": "passed", **result}
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     except (duckdb.Error, OSError, RuntimeError, TypeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, indent=2), file=sys.stderr)
         return 1
-    print(json.dumps({"status": "passed", **result}, indent=2, ensure_ascii=False))
+    print(json.dumps({"status": "passed", "report": str(output_path)}, indent=2))
     return 0
 
 
