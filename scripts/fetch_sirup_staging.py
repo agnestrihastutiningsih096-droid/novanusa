@@ -192,6 +192,14 @@ def validate_rows(payload: dict[str, Any], expected_count: int) -> list[dict[str
     return rows
 
 
+def verify_source_count(expected: int | None, observed: int) -> int:
+    if expected is not None and observed != expected:
+        raise RuntimeError(
+            f"source record count changed: expected {expected}, observed {observed}"
+        )
+    return observed if expected is None else expected
+
+
 def write_database(path: Path, rows: list[dict[str, Any]]) -> None:
     connection = duckdb.connect(str(path))
     try:
@@ -289,7 +297,7 @@ def main() -> int:
             rows = []
             source_count = 0
             page_count = 0
-        source_counts: list[int] = [source_count] if rows else []
+        expected_source_count: int | None = source_count if rows else None
         retries_used = 0
         while len(rows) < args.max_rows:
             length = min(args.page_size, args.max_rows - len(rows))
@@ -302,21 +310,23 @@ def main() -> int:
                 retries=args.retries,
             )
             page_rows = validate_rows(payload, length)
+            expected_source_count = verify_source_count(
+                expected_source_count, payload["recordsFiltered"]
+            )
             rows.extend(page_rows)
-            source_counts.append(payload["recordsFiltered"])
             retries_used += page_retries
             page_count += 1
             if checkpoint_path:
                 write_checkpoint(
-                    checkpoint_path, config, rows, source_counts[0], page_count
+                    checkpoint_path, config, rows, expected_source_count, page_count
                 )
             if len(rows) < args.max_rows:
                 time.sleep(args.delay)
         identifiers = [row["id"] for row in rows]
         if len(set(identifiers)) != len(identifiers):
             raise RuntimeError("duplicate ids detected across pages")
-        if len(set(source_counts)) != 1:
-            raise RuntimeError("source record count changed during pagination")
+        if expected_source_count is None:
+            raise RuntimeError("source record count was not collected")
         write_database(database_path, rows)
         row_count, distinct_ids, min_id, max_id = verify_database(database_path)
         if row_count != args.max_rows or distinct_ids != row_count:
@@ -341,7 +351,7 @@ def main() -> int:
             "distinct_id_count": distinct_ids,
             "min_id": min_id,
             "max_id": max_id,
-            "source_records_filtered": source_counts[0],
+            "source_records_filtered": expected_source_count,
             "request_count": page_count,
             "retries_used": retries_used,
             "sha256": digest,
