@@ -22,6 +22,7 @@ DEFAULT_STAGING_ROOT = ROOT / "data" / "staging" / "sirup"
 TABLE_NAME = "sirup_raw"
 MAX_PAGE_SIZE = 100
 MAX_ROWS = 10_000
+CHECKPOINT_VERSION = 1
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -48,6 +49,71 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def checkpoint_config(year: int, page_size: int) -> dict[str, Any]:
+    return {
+        "year": year,
+        "page_size": page_size,
+        "source_endpoint": SOURCE_ENDPOINT,
+        "order_column": 11,
+        "order_direction": "desc",
+    }
+
+
+def write_checkpoint(
+    path: Path,
+    config: dict[str, Any],
+    rows: list[dict[str, Any]],
+    source_count: int,
+    page_count: int,
+) -> None:
+    checkpoint = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "config": config,
+        "last_completed_page": page_count,
+        "next_start": len(rows),
+        "rows_collected": len(rows),
+        "source_count": source_count,
+        "rows": rows,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(checkpoint, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    temporary_path.replace(path)
+
+
+def load_checkpoint(
+    path: Path, expected_config: dict[str, Any]
+) -> tuple[list[dict[str, Any]], int, int]:
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"checkpoint is not readable JSON: {path}: {exc}") from exc
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("checkpoint root is not an object")
+    if checkpoint.get("checkpoint_version") != CHECKPOINT_VERSION:
+        raise RuntimeError("checkpoint version mismatch")
+    if checkpoint.get("config") != expected_config:
+        raise RuntimeError("checkpoint configuration mismatch")
+    rows = checkpoint.get("rows")
+    source_count = checkpoint.get("source_count")
+    page_count = checkpoint.get("last_completed_page")
+    if (
+        not isinstance(rows, list)
+        or not isinstance(source_count, int)
+        or not isinstance(page_count, int)
+        or checkpoint.get("rows_collected") != len(rows)
+        or checkpoint.get("next_start") != len(rows)
+        or page_count < 0
+        or any(not isinstance(row, dict) or REQUIRED_FIELDS - row.keys() for row in rows)
+        or any(row["id"] is None for row in rows)
+        or len({row["id"] for row in rows}) != len(rows)
+    ):
+        raise RuntimeError("checkpoint contents are inconsistent")
+    return rows, source_count, page_count
 
 
 def fetch_page(
@@ -183,6 +249,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retries", type=int, default=2, help="Retries after the first request (0-3).")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between pages (0-5 seconds).")
     parser.add_argument("--staging-root", type=Path, default=DEFAULT_STAGING_ROOT)
+    parser.add_argument("--checkpoint", type=Path, help="Persist or resume a bounded fetch checkpoint.")
     args = parser.parse_args()
     if not 1 <= args.page_size <= MAX_PAGE_SIZE:
         parser.error(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
@@ -212,10 +279,18 @@ def main() -> int:
     run_dir.mkdir(parents=True)
 
     try:
-        rows: list[dict[str, Any]] = []
-        source_counts: list[int] = []
+        config = checkpoint_config(args.year, args.page_size)
+        checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
+        if checkpoint_path and checkpoint_path.is_file():
+            rows, source_count, page_count = load_checkpoint(checkpoint_path, config)
+            if len(rows) > args.max_rows:
+                raise RuntimeError("checkpoint contains more rows than --max-rows")
+        else:
+            rows = []
+            source_count = 0
+            page_count = 0
+        source_counts: list[int] = [source_count] if rows else []
         retries_used = 0
-        page_count = 0
         while len(rows) < args.max_rows:
             length = min(args.page_size, args.max_rows - len(rows))
             payload, page_retries = fetch_page(
@@ -231,6 +306,10 @@ def main() -> int:
             source_counts.append(payload["recordsFiltered"])
             retries_used += page_retries
             page_count += 1
+            if checkpoint_path:
+                write_checkpoint(
+                    checkpoint_path, config, rows, source_counts[0], page_count
+                )
             if len(rows) < args.max_rows:
                 time.sleep(args.delay)
         identifiers = [row["id"] for row in rows]
