@@ -33,3 +33,6 @@ data/reference/lpse/raw/
 
 # NovaNusa local dashboard runtime state
 data/dashboard_communication_outcomes.json
+
+# Local snapshot staging artifacts
+data/staging/
