@@ -22,7 +22,7 @@ DEFAULT_STAGING_ROOT = ROOT / "data" / "staging" / "sirup"
 TABLE_NAME = "sirup_raw"
 MAX_PAGE_SIZE = 100
 MAX_ROWS = 10_000
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -65,18 +65,24 @@ def checkpoint_config(year: int, page_size: int, full_snapshot: bool) -> dict[st
 def write_checkpoint(
     path: Path,
     config: dict[str, Any],
-    rows: list[dict[str, Any]],
+    run_dir: Path,
+    rows_collected: int,
     source_count: int,
     page_count: int,
+    started_at: str,
+    retries_used: int,
 ) -> None:
     checkpoint = {
         "checkpoint_version": CHECKPOINT_VERSION,
         "config": config,
+        "run_dir": str(run_dir),
+        "database_path": str(run_dir / "sirup_staging.duckdb"),
         "last_completed_page": page_count,
-        "next_start": len(rows),
-        "rows_collected": len(rows),
+        "next_start": rows_collected,
+        "rows_collected": rows_collected,
         "source_count": source_count,
-        "rows": rows,
+        "started_at": started_at,
+        "retries_used": retries_used,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -88,7 +94,7 @@ def write_checkpoint(
 
 def load_checkpoint(
     path: Path, expected_config: dict[str, Any]
-) -> tuple[list[dict[str, Any]], int, int]:
+) -> tuple[Path, int, int, int, str, int]:
     try:
         checkpoint = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -99,22 +105,35 @@ def load_checkpoint(
         raise RuntimeError("checkpoint version mismatch")
     if checkpoint.get("config") != expected_config:
         raise RuntimeError("checkpoint configuration mismatch")
-    rows = checkpoint.get("rows")
+    run_dir_value = checkpoint.get("run_dir")
+    database_path_value = checkpoint.get("database_path")
+    rows_collected = checkpoint.get("rows_collected")
     source_count = checkpoint.get("source_count")
     page_count = checkpoint.get("last_completed_page")
     if (
-        not isinstance(rows, list)
+        not isinstance(run_dir_value, str)
+        or not isinstance(database_path_value, str)
+        or not isinstance(rows_collected, int)
         or not isinstance(source_count, int)
         or not isinstance(page_count, int)
-        or checkpoint.get("rows_collected") != len(rows)
-        or checkpoint.get("next_start") != len(rows)
+        or checkpoint.get("next_start") != rows_collected
+        or rows_collected < 0
         or page_count < 0
-        or any(not isinstance(row, dict) or REQUIRED_FIELDS - row.keys() for row in rows)
-        or any(row["id"] is None for row in rows)
-        or len({row["id"] for row in rows}) != len(rows)
+        or not isinstance(checkpoint.get("started_at"), str)
+        or not isinstance(checkpoint.get("retries_used"), int)
     ):
         raise RuntimeError("checkpoint contents are inconsistent")
-    return rows, source_count, page_count
+    run_dir = Path(run_dir_value).resolve()
+    if Path(database_path_value).resolve() != run_dir / "sirup_staging.duckdb":
+        raise RuntimeError("checkpoint database path is inconsistent")
+    return (
+        run_dir,
+        rows_collected,
+        source_count,
+        page_count,
+        checkpoint["started_at"],
+        checkpoint["retries_used"],
+    )
 
 
 def fetch_page(
@@ -201,7 +220,7 @@ def verify_source_count(expected: int | None, observed: int) -> int:
     return observed if expected is None else expected
 
 
-def write_database(path: Path, rows: list[dict[str, Any]]) -> None:
+def initialize_database(path: Path) -> None:
     connection = duckdb.connect(str(path))
     try:
         connection.execute(
@@ -222,14 +241,31 @@ def write_database(path: Path, rows: list[dict[str, Any]]) -> None:
             )
             """
         )
-        values = [tuple(row.get(field) for field in (
+    finally:
+        connection.close()
+
+
+def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
+    values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
             "jenisPengadaan", "metode", "sumberDana", "paket", "pemilihan", "idBulan",
         )) for row in rows]
+    connection = duckdb.connect(str(path))
+    try:
+        connection.execute("begin transaction")
+        identifiers = [value[0] for value in values]
+        placeholders = ", ".join("?" for _ in identifiers)
+        if connection.execute(
+            f"select count(*) from sirup_raw where id in ({placeholders})", identifiers
+        ).fetchone()[0]:
+            raise RuntimeError("source returned ids already present in staging")
         connection.executemany(
             "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values
         )
-        connection.execute("checkpoint")
+        connection.execute("commit")
+    except Exception:
+        connection.execute("rollback")
+        raise
     finally:
         connection.close()
 
@@ -280,68 +316,93 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    started_at = utc_now()
-    requested_label = "full" if args.full_snapshot else f"{args.max_rows}rows"
-    run_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + f"-{args.year}-{requested_label}"
-    )
-    run_dir = args.staging_root.resolve() / run_id
-    database_path = run_dir / "sirup_staging.duckdb"
-    manifest_path = run_dir / "manifest.json"
-    if run_dir.exists():
-        raise RuntimeError(f"staging run already exists: {run_dir}")
-    run_dir.mkdir(parents=True)
-
+    run_dir = args.staging_root.resolve()
     try:
         config = checkpoint_config(args.year, args.page_size, args.full_snapshot)
         checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
         if checkpoint_path and checkpoint_path.is_file():
-            rows, source_count, page_count = load_checkpoint(checkpoint_path, config)
-            if not args.full_snapshot and len(rows) > args.max_rows:
+            (
+                run_dir,
+                rows_collected,
+                source_count,
+                page_count,
+                started_at,
+                retries_used,
+            ) = load_checkpoint(checkpoint_path, config)
+            if run_dir.parent != args.staging_root.resolve():
+                raise RuntimeError("checkpoint run directory is outside --staging-root")
+            database_path = run_dir / "sirup_staging.duckdb"
+            if not database_path.is_file():
+                raise RuntimeError("checkpoint staging database does not exist")
+            database_rows, distinct_ids, _, _ = verify_database(database_path)
+            if database_rows != rows_collected or distinct_ids != database_rows:
+                raise RuntimeError("checkpoint offset does not match staging database")
+            if not args.full_snapshot and rows_collected > args.max_rows:
                 raise RuntimeError("checkpoint contains more rows than --max-rows")
         else:
-            rows = []
+            started_at = utc_now()
+            requested_label = "full" if args.full_snapshot else f"{args.max_rows}rows"
+            run_id = (
+                datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                + f"-{args.year}-{requested_label}"
+            )
+            run_dir = args.staging_root.resolve() / run_id
+            database_path = run_dir / "sirup_staging.duckdb"
+            if run_dir.exists():
+                raise RuntimeError(f"staging run already exists: {run_dir}")
+            run_dir.mkdir(parents=True)
+            initialize_database(database_path)
+            rows_collected = 0
             source_count = 0
             page_count = 0
-        expected_source_count: int | None = source_count if rows else None
+            retries_used = 0
+        run_id = run_dir.name
+        manifest_path = run_dir / "manifest.json"
+        expected_source_count: int | None = source_count if rows_collected else None
         target_row_count = expected_source_count if args.full_snapshot else args.max_rows
-        if target_row_count is not None and len(rows) > target_row_count:
+        if target_row_count is not None and rows_collected > target_row_count:
             raise RuntimeError("checkpoint contains more rows than the target row count")
-        retries_used = 0
-        while target_row_count is None or len(rows) < target_row_count:
+        while target_row_count is None or rows_collected < target_row_count:
             length = args.page_size if target_row_count is None else min(
-                args.page_size, target_row_count - len(rows)
+                args.page_size, target_row_count - rows_collected
             )
             payload, page_retries = fetch_page(
                 args.year,
-                start=len(rows),
+                start=rows_collected,
                 length=length,
                 draw=page_count + 1,
                 timeout=args.timeout,
                 retries=args.retries,
             )
-            page_rows = validate_rows(payload, length)
+            observed_source_count = payload.get("recordsFiltered")
+            if not isinstance(observed_source_count, int):
+                raise RuntimeError("response field 'recordsFiltered' is not an integer")
             expected_source_count = verify_source_count(
-                expected_source_count, payload["recordsFiltered"]
+                expected_source_count, observed_source_count
             )
             if args.full_snapshot:
                 target_row_count = expected_source_count
-            rows.extend(page_rows)
+                length = min(length, target_row_count - rows_collected)
+            page_rows = validate_rows(payload, length)
+            append_page(database_path, page_rows)
+            rows_collected += len(page_rows)
             retries_used += page_retries
             page_count += 1
             if checkpoint_path:
                 write_checkpoint(
-                    checkpoint_path, config, rows, expected_source_count, page_count
+                    checkpoint_path,
+                    config,
+                    run_dir,
+                    rows_collected,
+                    expected_source_count,
+                    page_count,
+                    started_at,
+                    retries_used,
                 )
-            if target_row_count is None or len(rows) < target_row_count:
+            if target_row_count is None or rows_collected < target_row_count:
                 time.sleep(args.delay)
-        identifiers = [row["id"] for row in rows]
-        if len(set(identifiers)) != len(identifiers):
-            raise RuntimeError("duplicate ids detected across pages")
         if expected_source_count is None:
             raise RuntimeError("source record count was not collected")
-        write_database(database_path, rows)
         row_count, distinct_ids, min_id, max_id = verify_database(database_path)
         if row_count != target_row_count or distinct_ids != row_count:
             raise RuntimeError("staging database row or unique-id validation failed")
