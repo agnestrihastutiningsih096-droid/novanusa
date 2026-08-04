@@ -31,6 +31,7 @@ REQUIRED_MANIFEST_FIELDS = {
     "manifest_version",
     "run_id",
     "status",
+    "full_snapshot",
     "promotion_eligible",
     "database_path",
     "table_name",
@@ -150,6 +151,9 @@ def validate(run_dir: Path) -> tuple[dict[str, Any], list[str]]:
         "database_path": Path(manifest["database_path"]).resolve() == database_path.resolve(),
         "table_name": manifest["table_name"] == TABLE_NAME,
         "requested_limit": manifest["requested_limit"] == facts["row_count"],
+        "full_snapshot": isinstance(manifest["full_snapshot"], bool),
+        "full_snapshot_target": not manifest["full_snapshot"]
+        or manifest.get("source_records_filtered") == facts["row_count"],
         "row_count": manifest["row_count"] == facts["row_count"],
         "distinct_id_count": manifest["distinct_id_count"] == facts["distinct_id_count"],
         "min_id": manifest["min_id"] == facts["min_id"],

@@ -51,10 +51,11 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def checkpoint_config(year: int, page_size: int) -> dict[str, Any]:
+def checkpoint_config(year: int, page_size: int, full_snapshot: bool) -> dict[str, Any]:
     return {
         "year": year,
         "page_size": page_size,
+        "full_snapshot": full_snapshot,
         "source_endpoint": SOURCE_ENDPOINT,
         "order_column": 11,
         "order_direction": "desc",
@@ -247,21 +248,26 @@ def verify_database(path: Path) -> tuple[int, int, int, int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fetch a bounded SiRUP sample into isolated staging.")
+    parser = argparse.ArgumentParser(description="Fetch SiRUP data into isolated staging.")
     parser.add_argument("--year", type=int, required=True, help="Explicit SiRUP budget year.")
     parser.add_argument("--page-size", type=int, default=100, help="Rows per page (1-100).")
     parser.add_argument(
         "--max-rows", type=int, default=100, help=f"Maximum rows to fetch (1-{MAX_ROWS})."
     )
+    parser.add_argument(
+        "--full-snapshot",
+        action="store_true",
+        help="Fetch all rows reported by recordsFiltered; --max-rows is ignored.",
+    )
     parser.add_argument("--timeout", type=float, default=30, help="Request timeout in seconds.")
     parser.add_argument("--retries", type=int, default=2, help="Retries after the first request (0-3).")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between pages (0-5 seconds).")
     parser.add_argument("--staging-root", type=Path, default=DEFAULT_STAGING_ROOT)
-    parser.add_argument("--checkpoint", type=Path, help="Persist or resume a bounded fetch checkpoint.")
+    parser.add_argument("--checkpoint", type=Path, help="Persist or resume a fetch checkpoint.")
     args = parser.parse_args()
     if not 1 <= args.page_size <= MAX_PAGE_SIZE:
         parser.error(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
-    if not 1 <= args.max_rows <= MAX_ROWS:
+    if not args.full_snapshot and not 1 <= args.max_rows <= MAX_ROWS:
         parser.error(f"--max-rows must be between 1 and {MAX_ROWS}")
     if not 1 <= args.timeout <= 60:
         parser.error("--timeout must be between 1 and 60 seconds")
@@ -275,9 +281,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     started_at = utc_now()
+    requested_label = "full" if args.full_snapshot else f"{args.max_rows}rows"
     run_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + f"-{args.year}-{args.max_rows}rows"
+        + f"-{args.year}-{requested_label}"
     )
     run_dir = args.staging_root.resolve() / run_id
     database_path = run_dir / "sirup_staging.duckdb"
@@ -287,20 +294,25 @@ def main() -> int:
     run_dir.mkdir(parents=True)
 
     try:
-        config = checkpoint_config(args.year, args.page_size)
+        config = checkpoint_config(args.year, args.page_size, args.full_snapshot)
         checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
         if checkpoint_path and checkpoint_path.is_file():
             rows, source_count, page_count = load_checkpoint(checkpoint_path, config)
-            if len(rows) > args.max_rows:
+            if not args.full_snapshot and len(rows) > args.max_rows:
                 raise RuntimeError("checkpoint contains more rows than --max-rows")
         else:
             rows = []
             source_count = 0
             page_count = 0
         expected_source_count: int | None = source_count if rows else None
+        target_row_count = expected_source_count if args.full_snapshot else args.max_rows
+        if target_row_count is not None and len(rows) > target_row_count:
+            raise RuntimeError("checkpoint contains more rows than the target row count")
         retries_used = 0
-        while len(rows) < args.max_rows:
-            length = min(args.page_size, args.max_rows - len(rows))
+        while target_row_count is None or len(rows) < target_row_count:
+            length = args.page_size if target_row_count is None else min(
+                args.page_size, target_row_count - len(rows)
+            )
             payload, page_retries = fetch_page(
                 args.year,
                 start=len(rows),
@@ -313,6 +325,8 @@ def main() -> int:
             expected_source_count = verify_source_count(
                 expected_source_count, payload["recordsFiltered"]
             )
+            if args.full_snapshot:
+                target_row_count = expected_source_count
             rows.extend(page_rows)
             retries_used += page_retries
             page_count += 1
@@ -320,7 +334,7 @@ def main() -> int:
                 write_checkpoint(
                     checkpoint_path, config, rows, expected_source_count, page_count
                 )
-            if len(rows) < args.max_rows:
+            if target_row_count is None or len(rows) < target_row_count:
                 time.sleep(args.delay)
         identifiers = [row["id"] for row in rows]
         if len(set(identifiers)) != len(identifiers):
@@ -329,7 +343,7 @@ def main() -> int:
             raise RuntimeError("source record count was not collected")
         write_database(database_path, rows)
         row_count, distinct_ids, min_id, max_id = verify_database(database_path)
-        if row_count != args.max_rows or distinct_ids != row_count:
+        if row_count != target_row_count or distinct_ids != row_count:
             raise RuntimeError("staging database row or unique-id validation failed")
         digest = sha256_file(database_path)
         completed_at = utc_now()
@@ -337,10 +351,11 @@ def main() -> int:
             "manifest_version": 1,
             "run_id": run_id,
             "status": "validated_staging_sample",
+            "full_snapshot": args.full_snapshot,
             "promotion_eligible": False,
             "source_endpoint": SOURCE_ENDPOINT,
             "requested_year": args.year,
-            "requested_limit": args.max_rows,
+            "requested_limit": target_row_count,
             "page_size": args.page_size,
             "page_count": page_count,
             "started_at": started_at,
