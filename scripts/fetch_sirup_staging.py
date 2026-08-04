@@ -295,6 +295,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fetch all rows reported by recordsFiltered; --max-rows is ignored.",
     )
+    parser.add_argument(
+        "--stop-after-rows",
+        type=int,
+        help="In full mode, stop after the committed page reaching this row count.",
+    )
     parser.add_argument("--timeout", type=float, default=30, help="Request timeout in seconds.")
     parser.add_argument("--retries", type=int, default=2, help="Retries after the first request (0-3).")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between pages (0-5 seconds).")
@@ -305,6 +310,13 @@ def parse_args() -> argparse.Namespace:
         parser.error(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
     if not args.full_snapshot and not 1 <= args.max_rows <= MAX_ROWS:
         parser.error(f"--max-rows must be between 1 and {MAX_ROWS}")
+    if args.stop_after_rows is not None:
+        if not args.full_snapshot:
+            parser.error("--stop-after-rows requires --full-snapshot")
+        if args.stop_after_rows < 1:
+            parser.error("--stop-after-rows must be at least 1")
+        if args.checkpoint is None:
+            parser.error("--stop-after-rows requires --checkpoint")
     if not 1 <= args.timeout <= 60:
         parser.error("--timeout must be between 1 and 60 seconds")
     if not 0 <= args.retries <= 3:
@@ -399,6 +411,15 @@ def main() -> int:
                     started_at,
                     retries_used,
                 )
+            if (
+                args.stop_after_rows is not None
+                and rows_collected >= args.stop_after_rows
+                and rows_collected < target_row_count
+            ):
+                print(f"controlled stop after committed rows: {rows_collected}")
+                print(f"staging database: {database_path}")
+                print(f"checkpoint: {checkpoint_path}")
+                return 0
             if target_row_count is None or rows_collected < target_row_count:
                 time.sleep(args.delay)
         if expected_source_count is None:
