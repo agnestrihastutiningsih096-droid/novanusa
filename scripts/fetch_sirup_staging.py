@@ -50,6 +50,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def page_request_params(year: int, start: int, length: int, draw: int) -> dict[str, Any]:
+    return {
+        "tahunAnggaran": year,
+        "jenisPengadaan": "",
+        "metodePengadaan": "",
+        "minPagu": "",
+        "maxPagu": "",
+        "bulan": "",
+        "lokasi": "",
+        "kldi": "",
+        "pdn": "",
+        "ukm": "",
+        "draw": draw,
+        "start": start,
+        "length": length,
+        "order[0][column]": 11,
+        "order[0][dir]": "desc",
+        "search[value]": "",
+        "search[regex]": "false",
+    }
+
+
 def checkpoint_config(year: int, page_size: int, full_snapshot: bool) -> dict[str, Any]:
     return {
         "year": year,
@@ -144,25 +166,7 @@ def fetch_page(
     timeout: float,
     retries: int,
 ) -> tuple[dict[str, Any], int]:
-    params = {
-        "tahunAnggaran": year,
-        "jenisPengadaan": "",
-        "metodePengadaan": "",
-        "minPagu": "",
-        "maxPagu": "",
-        "bulan": "",
-        "lokasi": "",
-        "kldi": "",
-        "pdn": "",
-        "ukm": "",
-        "draw": draw,
-        "start": start,
-        "length": length,
-        "order[0][column]": 11,
-        "order[0][dir]": "desc",
-        "search[value]": "",
-        "search[regex]": "false",
-    }
+    params = page_request_params(year, start, length, draw)
     url = f"{SOURCE_ENDPOINT}?{urllib.parse.urlencode(params)}"
     last_error: Exception | None = None
     for attempt in range(retries + 1):
@@ -214,6 +218,74 @@ def verify_source_count(expected: int | None, observed: int) -> int:
             f"source record count changed: expected {expected}, observed {observed}"
         )
     return observed if expected is None else expected
+
+
+def write_validation_failure_evidence(
+    run_dir: Path,
+    payload: dict[str, Any],
+    error: Exception,
+    year: int,
+    start: int,
+    length: int,
+    draw: int,
+) -> Path:
+    canonical_payload = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    evidence = {
+        "captured_at": utc_now(),
+        "year": year,
+        "start": start,
+        "length": length,
+        "draw": draw,
+        "source_endpoint": SOURCE_ENDPOINT,
+        "request_parameters": page_request_params(year, start, length, draw),
+        "observed_recordsFiltered": payload.get("recordsFiltered"),
+        "validation_error": str(error),
+        "payload_sha256": hashlib.sha256(canonical_payload).hexdigest(),
+        "payload": payload,
+    }
+    failures_dir = run_dir / "failures"
+    failures_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = failures_dir / f"page-start-{start}-draw-{draw}.json"
+    temporary_path = evidence_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(evidence, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    temporary_path.replace(evidence_path)
+    return evidence_path
+
+
+def validate_page(
+    run_dir: Path,
+    payload: dict[str, Any],
+    expected_source_count: int | None,
+    year: int,
+    start: int,
+    length: int,
+    draw: int,
+    full_snapshot: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    try:
+        observed_source_count = payload.get("recordsFiltered")
+        if not isinstance(observed_source_count, int):
+            raise RuntimeError("response field 'recordsFiltered' is not an integer")
+        verified_source_count = verify_source_count(
+            expected_source_count, observed_source_count
+        )
+        expected_page_count = length
+        if full_snapshot:
+            expected_page_count = min(length, verified_source_count - start)
+        rows = validate_rows(payload, expected_page_count)
+        return rows, verified_source_count
+    except RuntimeError as exc:
+        try:
+            write_validation_failure_evidence(
+                run_dir, payload, exc, year, start, length, draw
+            )
+        except Exception:
+            pass
+        raise
 
 
 def initialize_database(path: Path) -> None:
@@ -390,16 +462,18 @@ def main() -> int:
                 timeout=args.timeout,
                 retries=args.retries,
             )
-            observed_source_count = payload.get("recordsFiltered")
-            if not isinstance(observed_source_count, int):
-                raise RuntimeError("response field 'recordsFiltered' is not an integer")
-            expected_source_count = verify_source_count(
-                expected_source_count, observed_source_count
+            page_rows, expected_source_count = validate_page(
+                run_dir,
+                payload,
+                expected_source_count,
+                args.year,
+                rows_collected,
+                length,
+                page_count + 1,
+                args.full_snapshot,
             )
             if args.full_snapshot:
                 target_row_count = expected_source_count
-                length = min(length, target_row_count - rows_collected)
-            page_rows = validate_rows(payload, length)
             append_page(database_path, page_rows)
             rows_collected += len(page_rows)
             retries_used += page_retries
