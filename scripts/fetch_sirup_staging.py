@@ -5,14 +5,13 @@ import hashlib
 import json
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import duckdb
+import requests
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,7 +136,13 @@ def load_checkpoint(
 
 
 def fetch_page(
-    year: int, start: int, length: int, draw: int, timeout: float, retries: int
+    session: requests.Session,
+    year: int,
+    start: int,
+    length: int,
+    draw: int,
+    timeout: float,
+    retries: int,
 ) -> tuple[dict[str, Any], int]:
     params = {
         "tahunAnggaran": year,
@@ -158,30 +163,21 @@ def fetch_page(
         "search[value]": "",
         "search[regex]": "false",
     }
-    request = urllib.request.Request(
-        f"{SOURCE_ENDPOINT}?{urllib.parse.urlencode(params)}",
-        headers={
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Referer": SOURCE_PAGE,
-            "User-Agent": "NovaNusa-SiRUP-Staging-Fetch/1.0",
-            "X-Requested-With": "XMLHttpRequest",
-        },
-    )
+    url = f"{SOURCE_ENDPOINT}?{urllib.parse.urlencode(params)}"
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"unexpected HTTP status {response.status}")
-                content_type = response.headers.get_content_type()
-                if content_type != "application/json":
-                    raise RuntimeError(f"unexpected content type {content_type!r}")
-                body = response.read()
-            payload = json.loads(body.decode("utf-8"))
+            response = session.get(url, timeout=timeout)
+            if response.status_code != 200:
+                raise RuntimeError(f"unexpected HTTP status {response.status_code}")
+            content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+            if content_type != "application/json":
+                raise RuntimeError(f"unexpected content type {content_type!r}")
+            payload = response.json()
             if not isinstance(payload, dict):
                 raise RuntimeError("response root is not an object")
             return payload, attempt
-        except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+        except (requests.RequestException, json.JSONDecodeError, RuntimeError) as exc:
             last_error = exc
             if attempt < retries:
                 time.sleep(min(2**attempt, 4))
@@ -328,6 +324,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    session = requests.Session()
+    session.headers.update({
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": SOURCE_PAGE,
+        "User-Agent": "NovaNusa-SiRUP-Staging-Fetch/1.0",
+        "X-Requested-With": "XMLHttpRequest",
+    })
     run_dir = args.staging_root.resolve()
     try:
         config = checkpoint_config(args.year, args.page_size, args.full_snapshot)
@@ -379,6 +382,7 @@ def main() -> int:
                 args.page_size, target_row_count - rows_collected
             )
             payload, page_retries = fetch_page(
+                session,
                 args.year,
                 start=rows_collected,
                 length=length,
@@ -419,6 +423,7 @@ def main() -> int:
                 print(f"controlled stop after committed rows: {rows_collected}")
                 print(f"staging database: {database_path}")
                 print(f"checkpoint: {checkpoint_path}")
+                session.close()
                 return 0
             if target_row_count is None or rows_collected < target_row_count:
                 time.sleep(args.delay)
@@ -466,10 +471,12 @@ def main() -> int:
         }
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except Exception as exc:
+        session.close()
         print(f"staging fetch failed: {exc}", file=sys.stderr)
         print(f"failed staging directory: {run_dir}", file=sys.stderr)
         return 1
 
+    session.close()
     print(f"rows: {row_count}")
     print(f"distinct ids: {distinct_ids}")
     print(f"staging database: {database_path}")
