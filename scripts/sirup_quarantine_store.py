@@ -74,7 +74,7 @@ def _content_digest(record: dict[str, Any]) -> str:
 
 def build_quarantine_record(
     run_id: str, page_start: int, requested_length: int, page_draw: int,
-    row_index: int, raw_row: dict[str, Any], missing_fields: list[str],
+    row_index: int, raw_row: Any, missing_fields: list[str],
     invalid_fields: list[str], validation_error: str, captured_at: str,
     payload_sha256: str, request_parameters: dict[str, Any],
     failure_evidence_path: str,
@@ -90,8 +90,6 @@ def build_quarantine_record(
     _require_nonempty_string(validation_error, "validation_error")
     _require_nonempty_string(captured_at, "captured_at")
     _require_nonempty_string(failure_evidence_path, "failure_evidence_path")
-    if not isinstance(raw_row, dict):
-        raise ValueError("raw_row must be a JSON object")
     if not isinstance(request_parameters, dict):
         raise ValueError("request_parameters must be a JSON object")
     missing = _normalise_field_list(missing_fields, "missing_fields")
@@ -115,7 +113,7 @@ def build_quarantine_record(
         "requested_length": requested_length,
         "page_draw": page_draw,
         "row_index": row_index,
-        "package_id": raw_row.get("id"),
+        "package_id": raw_row.get("id") if isinstance(raw_row, dict) else None,
         "raw_row": raw_row,
         "missing_fields": missing,
         "invalid_fields": invalid,
@@ -144,8 +142,6 @@ def _validate_record(record: Any) -> dict[str, Any]:
         raise ValueError("row_index must be less than requested_length")
     if record["source_offset"] != record["page_start"] + record["row_index"]:
         raise ValueError("invalid source_offset")
-    if not isinstance(record["raw_row"], dict):
-        raise ValueError("raw_row must be a JSON object")
     if not isinstance(record["request_parameters"], dict):
         raise ValueError("request_parameters must be a JSON object")
     for name in ("missing_fields", "invalid_fields"):
@@ -159,7 +155,13 @@ def _validate_record(record: Any) -> dict[str, Any]:
     _require_nonempty_string(
         record["failure_evidence_path"], "failure_evidence_path")
     _require_sha256(record["payload_sha256"], "payload_sha256")
-    if record["package_id"] != record["raw_row"].get("id"):
+    canonical_json_bytes(record["raw_row"])
+    expected_package_id = (
+        record["raw_row"].get("id")
+        if isinstance(record["raw_row"], dict)
+        else None
+    )
+    if record["package_id"] != expected_package_id:
         raise ValueError("invalid package_id")
     if (not isinstance(record["page_identity"], dict)
             or set(record["page_identity"]) != _PAGE_IDENTITY_KEYS):

@@ -58,6 +58,29 @@ class QuarantineStoreTests(unittest.TestCase):
         self.assertEqual(record["package_id"], 42)
         self.assertIsNone(self.make_record(raw_row={})["package_id"])
 
+    def test_all_json_raw_row_types_are_accepted_and_preserved(self):
+        raw_rows = [
+            ("object", {"id": 42, "nested": [True, None]}),
+            ("array", [1, "two", False, None]),
+            ("string", "source row"),
+            ("integer", 17),
+            ("float", 1.25),
+            ("boolean", True),
+            ("null", None),
+        ]
+        with TemporaryDirectory() as temporary:
+            for row_index, (name, raw_row) in enumerate(raw_rows):
+                with self.subTest(name=name):
+                    record = self.make_record(row_index=row_index, raw_row=raw_row)
+                    expected_package_id = 42 if isinstance(raw_row, dict) else None
+                    self.assertEqual(expected_package_id, record["package_id"])
+                    append_quarantine_record(temporary, record)
+                    stored = read_quarantine_record(
+                        Path(temporary, record["quarantine_record_id"] + ".json")
+                    )
+                    self.assertEqual(raw_row, stored["raw_row"])
+                    self.assertIs(type(raw_row), type(stored["raw_row"]))
+
     def test_append_replay_and_conflict_never_overwrites(self):
         with TemporaryDirectory() as temporary:
             record = self.make_record()
@@ -97,7 +120,7 @@ class QuarantineStoreTests(unittest.TestCase):
 
     def test_malformed_inputs_and_constraints_rejected(self):
         bad = [{"run_id": ""}, {"payload_sha256": "A" * 64},
-               {"row_index": 10}, {"raw_row": []},
+               {"row_index": 10},
                {"missing_fields": [""]}]
         for change in bad:
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -160,6 +183,15 @@ class QuarantineStoreTests(unittest.TestCase):
             with self.assertRaises((TypeError, ValueError)):
                 append_quarantine_record(store, record)
             self.assertFalse(store.exists())
+
+    def test_nonserializable_raw_row_is_rejected_during_build(self):
+        with self.assertRaises((TypeError, ValueError)):
+            self.make_record(raw_row=object())
+
+    def test_non_dict_raw_row_with_package_id_is_rejected(self):
+        record = self.make_record(raw_row=[1, 2, 3])
+        record["package_id"] = 1
+        self.assert_record_rejected(record)
 
     def test_count_absent_valid_temporary_and_invalid_final(self):
         with TemporaryDirectory() as temporary:
