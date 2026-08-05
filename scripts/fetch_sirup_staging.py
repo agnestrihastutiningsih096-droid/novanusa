@@ -138,7 +138,7 @@ def write_checkpoint(
 
 def load_checkpoint(
     path: Path, expected_config: dict[str, Any]
-) -> tuple[Path, int, int, int, str, int]:
+) -> tuple[Path, int, int, int, int, int, str, int]:
     try:
         checkpoint = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -188,7 +188,9 @@ def load_checkpoint(
         raise RuntimeError("checkpoint quarantine path is inconsistent")
     return (
         run_dir,
+        source_rows_processed,
         canonical_rows_collected,
+        quarantine_rows,
         source_count,
         page_count,
         checkpoint["started_at"],
@@ -449,7 +451,9 @@ def main() -> int:
         if checkpoint_path and checkpoint_path.is_file():
             (
                 run_dir,
-                rows_collected,
+                source_rows_processed,
+                canonical_rows_collected,
+                quarantine_rows,
                 source_count,
                 page_count,
                 started_at,
@@ -461,9 +465,12 @@ def main() -> int:
             if not database_path.is_file():
                 raise RuntimeError("checkpoint staging database does not exist")
             database_rows, distinct_ids, _, _ = verify_database(database_path)
-            if database_rows != rows_collected or distinct_ids != database_rows:
-                raise RuntimeError("checkpoint offset does not match staging database")
-            if not args.full_snapshot and rows_collected > args.max_rows:
+            if (
+                database_rows != canonical_rows_collected
+                or distinct_ids != database_rows
+            ):
+                raise RuntimeError("checkpoint canonical count does not match staging database")
+            if not args.full_snapshot and canonical_rows_collected > args.max_rows:
                 raise RuntimeError("checkpoint contains more rows than --max-rows")
         else:
             started_at = utc_now()
@@ -478,24 +485,28 @@ def main() -> int:
                 raise RuntimeError(f"staging run already exists: {run_dir}")
             run_dir.mkdir(parents=True)
             initialize_database(database_path)
-            rows_collected = 0
+            source_rows_processed = 0
+            canonical_rows_collected = 0
+            quarantine_rows = 0
             source_count = 0
             page_count = 0
             retries_used = 0
         run_id = run_dir.name
         manifest_path = run_dir / "manifest.json"
-        expected_source_count: int | None = source_count if rows_collected else None
+        expected_source_count: int | None = (
+            source_count if source_rows_processed else None
+        )
         target_row_count = expected_source_count if args.full_snapshot else args.max_rows
-        if target_row_count is not None and rows_collected > target_row_count:
+        if target_row_count is not None and source_rows_processed > target_row_count:
             raise RuntimeError("checkpoint contains more rows than the target row count")
-        while target_row_count is None or rows_collected < target_row_count:
+        while target_row_count is None or source_rows_processed < target_row_count:
             length = args.page_size if target_row_count is None else min(
-                args.page_size, target_row_count - rows_collected
+                args.page_size, target_row_count - source_rows_processed
             )
             payload, page_retries = fetch_page(
                 session,
                 args.year,
-                start=rows_collected,
+                start=source_rows_processed,
                 length=length,
                 draw=page_count + 1,
                 timeout=args.timeout,
@@ -506,7 +517,7 @@ def main() -> int:
                 payload,
                 expected_source_count,
                 args.year,
-                rows_collected,
+                source_rows_processed,
                 length,
                 page_count + 1,
                 args.full_snapshot,
@@ -514,7 +525,8 @@ def main() -> int:
             if args.full_snapshot:
                 target_row_count = expected_source_count
             append_page(database_path, page_rows)
-            rows_collected += len(page_rows)
+            source_rows_processed += len(page_rows)
+            canonical_rows_collected += len(page_rows)
             retries_used += page_retries
             page_count += 1
             if checkpoint_path:
@@ -522,9 +534,9 @@ def main() -> int:
                     checkpoint_path,
                     config,
                     run_dir,
-                    source_rows_processed=rows_collected,
-                    canonical_rows_collected=rows_collected,
-                    quarantine_rows=0,
+                    source_rows_processed=source_rows_processed,
+                    canonical_rows_collected=canonical_rows_collected,
+                    quarantine_rows=quarantine_rows,
                     source_count=expected_source_count,
                     page_count=page_count,
                     started_at=started_at,
@@ -532,20 +544,23 @@ def main() -> int:
                 )
             if (
                 args.stop_after_rows is not None
-                and rows_collected >= args.stop_after_rows
-                and rows_collected < target_row_count
+                and source_rows_processed >= args.stop_after_rows
+                and source_rows_processed < target_row_count
             ):
-                print(f"controlled stop after committed rows: {rows_collected}")
+                print(
+                    "controlled stop after source rows processed: "
+                    f"{source_rows_processed}"
+                )
                 print(f"staging database: {database_path}")
                 print(f"checkpoint: {checkpoint_path}")
                 session.close()
                 return 0
-            if target_row_count is None or rows_collected < target_row_count:
+            if target_row_count is None or source_rows_processed < target_row_count:
                 time.sleep(args.delay)
         if expected_source_count is None:
             raise RuntimeError("source record count was not collected")
         row_count, distinct_ids, min_id, max_id = verify_database(database_path)
-        if row_count != target_row_count or distinct_ids != row_count:
+        if row_count != canonical_rows_collected or distinct_ids != row_count:
             raise RuntimeError("staging database row or unique-id validation failed")
         digest = sha256_file(database_path)
         completed_at = utc_now()

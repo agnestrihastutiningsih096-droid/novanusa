@@ -1,5 +1,7 @@
+import ast
 import hashlib
 import io
+import inspect
 import json
 import sys
 import tempfile
@@ -229,8 +231,155 @@ class CheckpointV3Tests(unittest.TestCase):
 
             loaded = fetch_sirup_staging.load_checkpoint(checkpoint, self.config())
 
-            self.assertEqual(run_dir.resolve(), loaded[0])
-            self.assertEqual((200, 3_300_013, 2), loaded[1:4])
+            self.assertEqual(
+                (
+                    run_dir.resolve(),
+                    200,
+                    200,
+                    0,
+                    3_300_013,
+                    2,
+                    "2026-08-04T00:00:00+00:00",
+                    1,
+                ),
+                loaded,
+            )
+
+
+class StrictRuntimeAccountingTests(unittest.TestCase):
+    @staticmethod
+    def valid_row(identifier: int) -> dict[str, object]:
+        return {
+            "id": identifier,
+            "id_referensi": "ref",
+            "pagu": 1.0,
+            "satuanKerja": "unit",
+            "kldi": "agency",
+            "lokasi": "location",
+            "jenisPengadaan": "goods",
+            "metode": "method",
+            "sumberDana": "fund",
+            "paket": "package",
+            "pemilihan": "selection",
+            "idBulan": 1,
+        }
+
+    def test_main_initializes_only_explicit_runtime_counters(self):
+        source = inspect.getsource(fetch_sirup_staging.main)
+        tree = ast.parse(source)
+        zero_initialized = {
+            node.targets[0].id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value == 0
+        }
+
+        self.assertTrue(
+            {
+                "source_rows_processed",
+                "canonical_rows_collected",
+                "quarantine_rows",
+            }.issubset(zero_initialized)
+        )
+        self.assertNotIn(
+            "rows_collected",
+            {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)},
+        )
+
+    def test_new_run_uses_explicit_counters_and_advances_after_append(self):
+        payload = {"recordsFiltered": 1, "data": [self.valid_row(123)]}
+        events = []
+
+        def append_page(*_args):
+            events.append("append")
+
+        def write_checkpoint(*_args, **kwargs):
+            events.append("checkpoint")
+            self.assertEqual(1, kwargs["source_rows_processed"])
+            self.assertEqual(1, kwargs["canonical_rows_collected"])
+            self.assertEqual(0, kwargs["quarantine_rows"])
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            checkpoint = staging_root / "checkpoint.json"
+            arguments = [
+                "fetch_sirup_staging.py",
+                "--year",
+                "2026",
+                "--page-size",
+                "1",
+                "--max-rows",
+                "1",
+                "--staging-root",
+                str(staging_root),
+                "--checkpoint",
+                str(checkpoint),
+            ]
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch.object(fetch_sirup_staging, "initialize_database"),
+                mock.patch.object(
+                    fetch_sirup_staging, "fetch_page", return_value=(payload, 0)
+                ) as fetch_page,
+                mock.patch.object(
+                    fetch_sirup_staging, "append_page", side_effect=append_page
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "write_checkpoint",
+                    side_effect=write_checkpoint,
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "verify_database",
+                    return_value=(1, 1, 123, 123),
+                ),
+                mock.patch.object(fetch_sirup_staging, "sha256_file", return_value="digest"),
+            ):
+                self.assertEqual(0, fetch_sirup_staging.main())
+
+            self.assertEqual(0, fetch_page.call_args.kwargs["start"])
+            self.assertEqual(["append", "checkpoint"], events)
+
+    def test_resume_reconciles_database_with_canonical_counter(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            run_dir = staging_root.resolve() / "run"
+            run_dir.mkdir()
+            (run_dir / "sirup_staging.duckdb").touch()
+            checkpoint = staging_root / "checkpoint.json"
+            checkpoint.touch()
+            arguments = [
+                "fetch_sirup_staging.py",
+                "--year",
+                "2026",
+                "--page-size",
+                "100",
+                "--full-snapshot",
+                "--staging-root",
+                str(staging_root),
+                "--checkpoint",
+                str(checkpoint),
+            ]
+            loaded = (run_dir, 200, 199, 0, 300, 2, "started", 0)
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch.object(
+                    fetch_sirup_staging, "load_checkpoint", return_value=loaded
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "verify_database",
+                    return_value=(200, 200, 1, 200),
+                ),
+                mock.patch("sys.stderr", io.StringIO()) as stderr,
+            ):
+                self.assertEqual(1, fetch_sirup_staging.main())
+
+            self.assertIn("canonical count", stderr.getvalue())
 
 class ValidationFailureEvidenceTests(unittest.TestCase):
     def test_missing_required_field_creates_evidence_without_advancing_state(self):
