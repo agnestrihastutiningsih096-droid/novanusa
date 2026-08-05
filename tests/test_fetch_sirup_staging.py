@@ -16,6 +16,74 @@ from fetch_sirup_staging import validate_page  # noqa: E402
 
 
 class ValidatePageClassifierIntegrationTests(unittest.TestCase):
+    def test_classify_page_returns_complete_classifier_result_unchanged(self):
+        payload = {"recordsFiltered": 5, "data": [{"source": 1}]}
+        classification = {
+            "valid_rows": [],
+            "invalid_rows": [{"validation_error": "invalid"}],
+            "invalid_row_count": 1,
+        }
+        with mock.patch.object(
+            fetch_sirup_staging,
+            "classify_page_rows",
+            return_value=classification,
+        ) as classify:
+            result, source_count = fetch_sirup_staging.classify_page(
+                payload, None, 4, 3, True
+            )
+
+        classify.assert_called_once_with(payload, 1, fetch_sirup_staging.REQUIRED_FIELDS)
+        self.assertIs(classification, result)
+        self.assertEqual(5, source_count)
+
+    def test_classify_page_preserves_source_count_verification(self):
+        payload = {"recordsFiltered": 3, "data": []}
+        with mock.patch.object(fetch_sirup_staging, "classify_page_rows") as classify:
+            with self.assertRaisesRegex(
+                RuntimeError, "source record count changed: expected 2, observed 3"
+            ):
+                fetch_sirup_staging.classify_page(payload, 2, 0, 1, False)
+
+        classify.assert_not_called()
+
+    def test_classify_page_has_no_failure_evidence_side_effect(self):
+        payload = {"recordsFiltered": "invalid", "data": []}
+        with mock.patch.object(
+            fetch_sirup_staging, "write_validation_failure_evidence"
+        ) as write_evidence:
+            with self.assertRaisesRegex(RuntimeError, "is not an integer"):
+                fetch_sirup_staging.classify_page(payload, None, 0, 1, False)
+
+        write_evidence.assert_not_called()
+
+    def test_validate_page_remains_the_strict_wrapper(self):
+        payload = {"recordsFiltered": 1, "data": ["bad"]}
+        classification = {
+            "valid_rows": [],
+            "invalid_rows": [{"validation_error": "strict invalid row"}],
+            "invalid_row_count": 1,
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "classify_page",
+                return_value=(classification, 1),
+            ) as classify,
+            mock.patch.object(
+                fetch_sirup_staging, "write_validation_failure_evidence"
+            ) as write_evidence,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "page row validation failed: strict invalid row"
+            ):
+                validate_page(
+                    Path(temporary_directory), payload, None, 2026, 0, 1, 1, False
+                )
+
+        classify.assert_called_once_with(payload, None, 0, 1, False)
+        write_evidence.assert_called_once()
+
     def test_delegates_classification_and_returns_valid_rows_unchanged(self):
         payload = {"recordsFiltered": 2, "data": [{"source": 1}, {"source": 2}]}
         valid_rows = payload["data"]

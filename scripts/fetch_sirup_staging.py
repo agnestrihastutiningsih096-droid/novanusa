@@ -322,6 +322,26 @@ def write_validation_failure_evidence(
     return evidence_path
 
 
+def classify_page(
+    payload: dict[str, Any],
+    expected_source_count: int | None,
+    start: int,
+    length: int,
+    full_snapshot: bool,
+) -> tuple[dict[str, Any], int]:
+    observed_source_count = payload.get("recordsFiltered")
+    if not isinstance(observed_source_count, int):
+        raise RuntimeError("response field 'recordsFiltered' is not an integer")
+    verified_source_count = verify_source_count(
+        expected_source_count, observed_source_count
+    )
+    expected_page_count = length
+    if full_snapshot:
+        expected_page_count = min(length, verified_source_count - start)
+    classification = classify_page_rows(payload, expected_page_count, REQUIRED_FIELDS)
+    return classification, verified_source_count
+
+
 def validate_page(
     run_dir: Path,
     payload: dict[str, Any],
@@ -333,17 +353,8 @@ def validate_page(
     full_snapshot: bool,
 ) -> tuple[list[dict[str, Any]], int]:
     try:
-        observed_source_count = payload.get("recordsFiltered")
-        if not isinstance(observed_source_count, int):
-            raise RuntimeError("response field 'recordsFiltered' is not an integer")
-        verified_source_count = verify_source_count(
-            expected_source_count, observed_source_count
-        )
-        expected_page_count = length
-        if full_snapshot:
-            expected_page_count = min(length, verified_source_count - start)
-        classification = classify_page_rows(
-            payload, expected_page_count, REQUIRED_FIELDS
+        classification, verified_source_count = classify_page(
+            payload, expected_source_count, start, length, full_snapshot
         )
         if classification["invalid_row_count"] > 0:
             detail = "; ".join(
