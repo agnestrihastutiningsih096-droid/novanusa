@@ -15,6 +15,110 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class PreparePageTransactionTests(unittest.TestCase):
+    def test_prepares_read_only_transaction_with_exact_values(self):
+        payload = {
+            "recordsFiltered": 7,
+            "data": [{"name": "Paket é", "id": 2}],
+            "draw": 4,
+        }
+        payload_before = json.loads(json.dumps(payload))
+        classification = {
+            "valid_rows": payload["data"],
+            "invalid_rows": [],
+            "invalid_row_count": 0,
+        }
+        canonical_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        expected_digest = hashlib.sha256(canonical_payload).hexdigest()
+        expected_parameters = fetch_sirup_staging.page_request_params(
+            2026, 5, 2, 4
+        )
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "classify_page",
+                return_value=(classification, 7),
+            ) as classify,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "page_request_params",
+                wraps=fetch_sirup_staging.page_request_params,
+            ) as request_parameters,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "utc_now",
+                return_value="2026-08-06T01:02:03+00:00",
+            ) as utc_now,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append_page,
+            mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write_checkpoint,
+            mock.patch.object(
+                fetch_sirup_staging, "write_validation_failure_evidence"
+            ) as write_evidence,
+        ):
+            result = fetch_sirup_staging.prepare_page_transaction(
+                payload, None, "run-1", 2026, 5, 2, 4, True
+            )
+
+        self.assertEqual(
+            {
+                "classification",
+                "verified_source_count",
+                "payload_sha256",
+                "request_parameters",
+                "page_identity",
+                "captured_at",
+            },
+            set(result),
+        )
+        classify.assert_called_once_with(payload, None, 5, 2, True)
+        self.assertIs(classification, result["classification"])
+        self.assertEqual(7, result["verified_source_count"])
+        self.assertEqual(expected_digest, result["payload_sha256"])
+        request_parameters.assert_called_once_with(2026, 5, 2, 4)
+        self.assertEqual(expected_parameters, result["request_parameters"])
+        self.assertEqual(
+            {
+                "run_id": "run-1",
+                "page_start": 5,
+                "requested_length": 2,
+                "page_draw": 4,
+                "payload_sha256": expected_digest,
+            },
+            result["page_identity"],
+        )
+        self.assertEqual("2026-08-06T01:02:03+00:00", result["captured_at"])
+        utc_now.assert_called_once_with()
+        self.assertEqual(payload_before, payload)
+        append_page.assert_not_called()
+        write_checkpoint.assert_not_called()
+        write_evidence.assert_not_called()
+
+    def test_classification_error_propagates_unchanged(self):
+        error = RuntimeError("classification failed")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "classify_page", side_effect=error
+            ),
+            mock.patch.object(fetch_sirup_staging, "utc_now") as utc_now,
+            mock.patch.object(
+                fetch_sirup_staging, "write_validation_failure_evidence"
+            ) as write_evidence,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.prepare_page_transaction(
+                    {"recordsFiltered": 1, "data": []},
+                    None, "run-1", 2026, 0, 1, 1, False,
+                )
+
+        self.assertIs(error, raised.exception)
+        utc_now.assert_not_called()
+        write_evidence.assert_not_called()
+
+
 class ValidatePageClassifierIntegrationTests(unittest.TestCase):
     def test_classify_page_returns_complete_classifier_result_unchanged(self):
         payload = {"recordsFiltered": 5, "data": [{"source": 1}]}

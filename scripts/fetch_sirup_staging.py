@@ -342,6 +342,41 @@ def classify_page(
     return classification, verified_source_count
 
 
+def prepare_page_transaction(
+    payload: dict[str, Any],
+    expected_source_count: int | None,
+    run_id: str,
+    year: int,
+    start: int,
+    length: int,
+    draw: int,
+    full_snapshot: bool,
+) -> dict[str, Any]:
+    classification, verified_source_count = classify_page(
+        payload, expected_source_count, start, length, full_snapshot
+    )
+    canonical_payload = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    request_parameters = page_request_params(year, start, length, draw)
+    captured_at = utc_now()
+    return {
+        "classification": classification,
+        "verified_source_count": verified_source_count,
+        "payload_sha256": payload_sha256,
+        "request_parameters": request_parameters,
+        "page_identity": {
+            "run_id": run_id,
+            "page_start": start,
+            "requested_length": length,
+            "page_draw": draw,
+            "payload_sha256": payload_sha256,
+        },
+        "captured_at": captured_at,
+    }
+
+
 def validate_page(
     run_dir: Path,
     payload: dict[str, Any],
