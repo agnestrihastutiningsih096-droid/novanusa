@@ -22,6 +22,8 @@ TABLE_NAME = "sirup_raw"
 MAX_PAGE_SIZE = 100
 MAX_ROWS = 10_000
 CHECKPOINT_VERSION = 2
+CHECKPOINT_REPLACE_ATTEMPTS = 10
+CHECKPOINT_REPLACE_DELAY_SECONDS = 0.5
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -110,7 +112,14 @@ def write_checkpoint(
     temporary_path.write_text(
         json.dumps(checkpoint, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    temporary_path.replace(path)
+    for attempt in range(CHECKPOINT_REPLACE_ATTEMPTS):
+        try:
+            temporary_path.replace(path)
+            break
+        except PermissionError:
+            if attempt == CHECKPOINT_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(CHECKPOINT_REPLACE_DELAY_SECONDS)
 
 
 def load_checkpoint(

@@ -13,6 +13,78 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class CheckpointAtomicWriteTests(unittest.TestCase):
+    def write_checkpoint(self, checkpoint: Path) -> None:
+        fetch_sirup_staging.write_checkpoint(
+            checkpoint,
+            {"year": 2026},
+            checkpoint.parent / "run",
+            244_500,
+            300_000,
+            2_445,
+            "2026-08-04T00:00:00+00:00",
+            3,
+        )
+
+    def test_transient_permission_error_is_retried_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            original_replace = Path.replace
+            replace_attempts = 0
+
+            def transient_replace(source, target):
+                nonlocal replace_attempts
+                replace_attempts += 1
+                if replace_attempts == 1:
+                    raise PermissionError("temporarily locked")
+                return original_replace(source, target)
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=transient_replace),
+                mock.patch.object(fetch_sirup_staging.time, "sleep") as sleep,
+            ):
+                self.write_checkpoint(checkpoint)
+
+            self.assertEqual(2, replace_attempts)
+            sleep.assert_called_once_with(0.5)
+            self.assertEqual(244_500, json.loads(checkpoint.read_text())["rows_collected"])
+            self.assertFalse(checkpoint.with_suffix(".json.tmp").exists())
+
+    def test_repeated_permission_error_exhausts_attempts_and_leaves_temp(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            error = PermissionError("still locked")
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=error) as replace,
+                mock.patch.object(fetch_sirup_staging.time, "sleep") as sleep,
+            ):
+                with self.assertRaises(PermissionError) as raised:
+                    self.write_checkpoint(checkpoint)
+
+            self.assertIs(error, raised.exception)
+            self.assertEqual(10, replace.call_count)
+            self.assertEqual(9, sleep.call_count)
+            self.assertTrue(checkpoint.with_suffix(".json.tmp").is_file())
+
+    def test_non_permission_error_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            error = OSError("unexpected failure")
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=error) as replace,
+                mock.patch.object(fetch_sirup_staging.time, "sleep") as sleep,
+            ):
+                with self.assertRaises(OSError) as raised:
+                    self.write_checkpoint(checkpoint)
+
+            self.assertIs(error, raised.exception)
+            replace.assert_called_once()
+            sleep.assert_not_called()
+            self.assertTrue(checkpoint.with_suffix(".json.tmp").is_file())
+
+
 class ValidationFailureEvidenceTests(unittest.TestCase):
     def test_missing_required_field_creates_evidence_without_advancing_state(self):
         payload = {
