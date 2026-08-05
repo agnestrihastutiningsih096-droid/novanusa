@@ -15,6 +15,69 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class CliModeBoundaryTests(unittest.TestCase):
+    def test_mode_defaults_to_strict(self):
+        with mock.patch.object(sys, "argv", ["fetch_sirup_staging.py", "--year", "2026"]):
+            self.assertEqual("strict", fetch_sirup_staging.parse_args().mode)
+
+    def test_explicit_strict_mode(self):
+        arguments = [
+            "fetch_sirup_staging.py",
+            "--year",
+            "2026",
+            "--mode",
+            "strict",
+        ]
+        with mock.patch.object(sys, "argv", arguments):
+            self.assertEqual("strict", fetch_sirup_staging.parse_args().mode)
+
+    def test_checkpoint_mode_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            strict_config = fetch_sirup_staging.checkpoint_config(
+                2026, 100, True, "strict"
+            )
+            fetch_sirup_staging.write_checkpoint(
+                checkpoint,
+                strict_config,
+                root / "run",
+                source_rows_processed=200,
+                canonical_rows_collected=200,
+                quarantine_rows=0,
+                source_count=300,
+                page_count=2,
+                started_at="2026-08-04T00:00:00+00:00",
+                retries_used=0,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "checkpoint mode mismatch"):
+                fetch_sirup_staging.load_checkpoint(
+                    checkpoint,
+                    fetch_sirup_staging.checkpoint_config(
+                        2026, 100, True, "quarantine"
+                    ),
+                )
+
+    def test_quarantine_mode_is_rejected_before_collector_setup(self):
+        arguments = [
+            "fetch_sirup_staging.py",
+            "--year",
+            "2026",
+            "--mode",
+            "quarantine",
+        ]
+        with (
+            mock.patch.object(sys, "argv", arguments),
+            mock.patch.object(fetch_sirup_staging.requests, "Session") as session,
+            mock.patch("sys.stderr", io.StringIO()) as stderr,
+        ):
+            self.assertEqual(1, fetch_sirup_staging.main())
+
+        session.assert_not_called()
+        self.assertEqual("quarantine mode is not implemented\n", stderr.getvalue())
+
+
 class CheckpointAtomicWriteTests(unittest.TestCase):
     def write_checkpoint(self, checkpoint: Path) -> None:
         fetch_sirup_staging.write_checkpoint(

@@ -75,12 +75,14 @@ def page_request_params(year: int, start: int, length: int, draw: int) -> dict[s
     }
 
 
-def checkpoint_config(year: int, page_size: int, full_snapshot: bool) -> dict[str, Any]:
+def checkpoint_config(
+    year: int, page_size: int, full_snapshot: bool, mode: str = "strict"
+) -> dict[str, Any]:
     return {
         "year": year,
         "page_size": page_size,
         "full_snapshot": full_snapshot,
-        "mode": "strict",
+        "mode": mode,
         "source_endpoint": SOURCE_ENDPOINT,
         "order_column": 11,
         "order_direction": "desc",
@@ -149,7 +151,13 @@ def load_checkpoint(
         raise RuntimeError("checkpoint v2 requires explicit migration")
     if checkpoint.get("checkpoint_version") != CHECKPOINT_VERSION:
         raise RuntimeError("checkpoint version mismatch")
-    if checkpoint.get("config") != expected_config:
+    checkpoint_config_value = checkpoint.get("config")
+    if (
+        isinstance(checkpoint_config_value, dict)
+        and checkpoint_config_value.get("mode") != expected_config.get("mode")
+    ):
+        raise RuntimeError("checkpoint mode mismatch")
+    if checkpoint_config_value != expected_config:
         raise RuntimeError("checkpoint configuration mismatch")
     if checkpoint["config"].get("mode") != "strict":
         raise RuntimeError("checkpoint mode must be strict")
@@ -395,6 +403,12 @@ def verify_database(path: Path) -> tuple[int, int, int, int]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch SiRUP data into isolated staging.")
     parser.add_argument("--year", type=int, required=True, help="Explicit SiRUP budget year.")
+    parser.add_argument(
+        "--mode",
+        choices=("strict", "quarantine"),
+        default="strict",
+        help="Collection mode (default: strict).",
+    )
     parser.add_argument("--page-size", type=int, default=100, help="Rows per page (1-100).")
     parser.add_argument(
         "--max-rows", type=int, default=100, help=f"Maximum rows to fetch (1-{MAX_ROWS})."
@@ -437,6 +451,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.mode == "quarantine":
+        print("quarantine mode is not implemented", file=sys.stderr)
+        return 1
     session = requests.Session()
     session.headers.update({
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -446,7 +463,9 @@ def main() -> int:
     })
     run_dir = args.staging_root.resolve()
     try:
-        config = checkpoint_config(args.year, args.page_size, args.full_snapshot)
+        config = checkpoint_config(
+            args.year, args.page_size, args.full_snapshot, args.mode
+        )
         checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
         if checkpoint_path and checkpoint_path.is_file():
             (
