@@ -17,13 +17,15 @@ class CheckpointAtomicWriteTests(unittest.TestCase):
     def write_checkpoint(self, checkpoint: Path) -> None:
         fetch_sirup_staging.write_checkpoint(
             checkpoint,
-            {"year": 2026},
+            fetch_sirup_staging.checkpoint_config(2026, 100, True),
             checkpoint.parent / "run",
-            244_500,
-            300_000,
-            2_445,
-            "2026-08-04T00:00:00+00:00",
-            3,
+            source_rows_processed=244_500,
+            canonical_rows_collected=244_500,
+            quarantine_rows=0,
+            source_count=300_000,
+            page_count=2_445,
+            started_at="2026-08-04T00:00:00+00:00",
+            retries_used=3,
         )
 
     def test_transient_permission_error_is_retried_then_succeeds(self):
@@ -47,7 +49,8 @@ class CheckpointAtomicWriteTests(unittest.TestCase):
 
             self.assertEqual(2, replace_attempts)
             sleep.assert_called_once_with(0.5)
-            self.assertEqual(244_500, json.loads(checkpoint.read_text())["rows_collected"])
+            written = json.loads(checkpoint.read_text())
+            self.assertEqual(244_500, written["canonical_rows_collected"])
             self.assertFalse(checkpoint.with_suffix(".json.tmp").exists())
 
     def test_repeated_permission_error_exhausts_attempts_and_leaves_temp(self):
@@ -84,6 +87,150 @@ class CheckpointAtomicWriteTests(unittest.TestCase):
             sleep.assert_not_called()
             self.assertTrue(checkpoint.with_suffix(".json.tmp").is_file())
 
+
+class CheckpointV3Tests(unittest.TestCase):
+    def config(self) -> dict[str, object]:
+        return fetch_sirup_staging.checkpoint_config(2026, 100, True)
+
+    def write_checkpoint(self, checkpoint: Path, run_dir: Path) -> dict[str, object]:
+        fetch_sirup_staging.write_checkpoint(
+            checkpoint,
+            self.config(),
+            run_dir,
+            source_rows_processed=200,
+            canonical_rows_collected=200,
+            quarantine_rows=0,
+            source_count=3_300_013,
+            page_count=2,
+            started_at="2026-08-04T00:00:00+00:00",
+            retries_used=1,
+        )
+        return json.loads(checkpoint.read_text(encoding="utf-8"))
+
+    def test_checkpoint_contains_exact_v3_fields_and_strict_invariants(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            run_dir = root / "run"
+            written = self.write_checkpoint(checkpoint, run_dir)
+
+            self.assertEqual(
+                {
+                    "checkpoint_version",
+                    "config",
+                    "run_dir",
+                    "database_path",
+                    "quarantine_path",
+                    "source_count",
+                    "source_rows_processed",
+                    "canonical_rows_collected",
+                    "quarantine_rows",
+                    "next_start",
+                    "last_completed_page",
+                    "retries_used",
+                    "started_at",
+                },
+                set(written),
+            )
+            self.assertEqual(3, written["checkpoint_version"])
+            self.assertEqual("strict", written["config"]["mode"])
+            self.assertEqual(200, written["source_rows_processed"])
+            self.assertEqual(200, written["canonical_rows_collected"])
+            self.assertEqual(0, written["quarantine_rows"])
+            self.assertEqual(written["source_rows_processed"], written["next_start"])
+            self.assertNotIn("rows_collected", written)
+
+    def test_write_rejects_invalid_strict_accounting_before_temporary_write(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            base_arguments = {
+                "path": checkpoint,
+                "config": self.config(),
+                "run_dir": root / "run",
+                "source_count": 3_300_013,
+                "page_count": 2,
+                "started_at": "2026-08-04T00:00:00+00:00",
+                "retries_used": 1,
+            }
+
+            with self.assertRaisesRegex(
+                RuntimeError, "source_rows_processed to equal canonical_rows_collected"
+            ):
+                fetch_sirup_staging.write_checkpoint(
+                    source_rows_processed=200,
+                    canonical_rows_collected=199,
+                    quarantine_rows=0,
+                    **base_arguments,
+                )
+            self.assertFalse(checkpoint.with_suffix(".json.tmp").exists())
+
+            with self.assertRaisesRegex(
+                RuntimeError, "quarantine_rows to be zero"
+            ):
+                fetch_sirup_staging.write_checkpoint(
+                    source_rows_processed=200,
+                    canonical_rows_collected=200,
+                    quarantine_rows=1,
+                    **base_arguments,
+                )
+            self.assertFalse(checkpoint.with_suffix(".json.tmp").exists())
+
+    def test_quarantine_path_is_deterministic_inside_run_directory(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            run_dir = root / "run"
+            written = self.write_checkpoint(root / "checkpoint.json", run_dir)
+
+            self.assertEqual(
+                run_dir / fetch_sirup_staging.QUARANTINE_PATH_NAME,
+                Path(written["quarantine_path"]),
+            )
+            self.assertFalse(Path(written["quarantine_path"]).exists())
+
+    def test_v2_checkpoint_requires_explicit_migration(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            checkpoint.write_text(
+                json.dumps({"checkpoint_version": 2}), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "checkpoint v2 requires explicit migration"
+            ):
+                fetch_sirup_staging.load_checkpoint(checkpoint, self.config())
+
+    def test_invalid_v3_accounting_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            written = self.write_checkpoint(checkpoint, root / "run")
+            invalid_values = {
+                "canonical_rows_collected": 199,
+                "quarantine_rows": 1,
+                "next_start": 199,
+            }
+            for field, value in invalid_values.items():
+                with self.subTest(field=field):
+                    invalid = dict(written)
+                    invalid[field] = value
+                    checkpoint.write_text(json.dumps(invalid), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        RuntimeError, "contents are inconsistent"
+                    ):
+                        fetch_sirup_staging.load_checkpoint(checkpoint, self.config())
+
+    def test_load_returns_existing_runtime_values(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            run_dir = root / "run"
+            self.write_checkpoint(checkpoint, run_dir)
+
+            loaded = fetch_sirup_staging.load_checkpoint(checkpoint, self.config())
+
+            self.assertEqual(run_dir.resolve(), loaded[0])
+            self.assertEqual((200, 3_300_013, 2), loaded[1:4])
 
 class ValidationFailureEvidenceTests(unittest.TestCase):
     def test_missing_required_field_creates_evidence_without_advancing_state(self):

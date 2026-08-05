@@ -21,9 +21,10 @@ DEFAULT_STAGING_ROOT = ROOT / "data" / "staging" / "sirup"
 TABLE_NAME = "sirup_raw"
 MAX_PAGE_SIZE = 100
 MAX_ROWS = 10_000
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 CHECKPOINT_REPLACE_ATTEMPTS = 10
 CHECKPOINT_REPLACE_DELAY_SECONDS = 0.5
+QUARANTINE_PATH_NAME = "quarantine"
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -79,6 +80,7 @@ def checkpoint_config(year: int, page_size: int, full_snapshot: bool) -> dict[st
         "year": year,
         "page_size": page_size,
         "full_snapshot": full_snapshot,
+        "mode": "strict",
         "source_endpoint": SOURCE_ENDPOINT,
         "order_column": 11,
         "order_direction": "desc",
@@ -89,23 +91,35 @@ def write_checkpoint(
     path: Path,
     config: dict[str, Any],
     run_dir: Path,
-    rows_collected: int,
+    source_rows_processed: int,
+    canonical_rows_collected: int,
+    quarantine_rows: int,
     source_count: int,
     page_count: int,
     started_at: str,
     retries_used: int,
 ) -> None:
+    if source_rows_processed != canonical_rows_collected:
+        raise RuntimeError(
+            "strict checkpoint requires source_rows_processed to equal "
+            "canonical_rows_collected"
+        )
+    if quarantine_rows != 0:
+        raise RuntimeError("strict checkpoint requires quarantine_rows to be zero")
     checkpoint = {
         "checkpoint_version": CHECKPOINT_VERSION,
         "config": config,
         "run_dir": str(run_dir),
         "database_path": str(run_dir / "sirup_staging.duckdb"),
-        "last_completed_page": page_count,
-        "next_start": rows_collected,
-        "rows_collected": rows_collected,
+        "quarantine_path": str(run_dir / QUARANTINE_PATH_NAME),
         "source_count": source_count,
-        "started_at": started_at,
+        "source_rows_processed": source_rows_processed,
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+        "next_start": source_rows_processed,
+        "last_completed_page": page_count,
         "retries_used": retries_used,
+        "started_at": started_at,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -131,34 +145,50 @@ def load_checkpoint(
         raise RuntimeError(f"checkpoint is not readable JSON: {path}: {exc}") from exc
     if not isinstance(checkpoint, dict):
         raise RuntimeError("checkpoint root is not an object")
+    if checkpoint.get("checkpoint_version") == 2:
+        raise RuntimeError("checkpoint v2 requires explicit migration")
     if checkpoint.get("checkpoint_version") != CHECKPOINT_VERSION:
         raise RuntimeError("checkpoint version mismatch")
     if checkpoint.get("config") != expected_config:
         raise RuntimeError("checkpoint configuration mismatch")
+    if checkpoint["config"].get("mode") != "strict":
+        raise RuntimeError("checkpoint mode must be strict")
     run_dir_value = checkpoint.get("run_dir")
     database_path_value = checkpoint.get("database_path")
-    rows_collected = checkpoint.get("rows_collected")
+    quarantine_path_value = checkpoint.get("quarantine_path")
+    source_rows_processed = checkpoint.get("source_rows_processed")
+    canonical_rows_collected = checkpoint.get("canonical_rows_collected")
+    quarantine_rows = checkpoint.get("quarantine_rows")
     source_count = checkpoint.get("source_count")
     page_count = checkpoint.get("last_completed_page")
     if (
         not isinstance(run_dir_value, str)
         or not isinstance(database_path_value, str)
-        or not isinstance(rows_collected, int)
+        or not isinstance(quarantine_path_value, str)
+        or not isinstance(source_rows_processed, int)
+        or not isinstance(canonical_rows_collected, int)
+        or not isinstance(quarantine_rows, int)
         or not isinstance(source_count, int)
         or not isinstance(page_count, int)
-        or checkpoint.get("next_start") != rows_collected
-        or rows_collected < 0
+        or checkpoint.get("next_start") != source_rows_processed
+        or source_rows_processed != canonical_rows_collected
+        or quarantine_rows != 0
+        or source_rows_processed < 0
+        or source_count < 0
         or page_count < 0
         or not isinstance(checkpoint.get("started_at"), str)
         or not isinstance(checkpoint.get("retries_used"), int)
+        or checkpoint["retries_used"] < 0
     ):
         raise RuntimeError("checkpoint contents are inconsistent")
     run_dir = Path(run_dir_value).resolve()
     if Path(database_path_value).resolve() != run_dir / "sirup_staging.duckdb":
         raise RuntimeError("checkpoint database path is inconsistent")
+    if Path(quarantine_path_value).resolve() != run_dir / QUARANTINE_PATH_NAME:
+        raise RuntimeError("checkpoint quarantine path is inconsistent")
     return (
         run_dir,
-        rows_collected,
+        canonical_rows_collected,
         source_count,
         page_count,
         checkpoint["started_at"],
@@ -492,11 +522,13 @@ def main() -> int:
                     checkpoint_path,
                     config,
                     run_dir,
-                    rows_collected,
-                    expected_source_count,
-                    page_count,
-                    started_at,
-                    retries_used,
+                    source_rows_processed=rows_collected,
+                    canonical_rows_collected=rows_collected,
+                    quarantine_rows=0,
+                    source_count=expected_source_count,
+                    page_count=page_count,
+                    started_at=started_at,
+                    retries_used=retries_used,
                 )
             if (
                 args.stop_after_rows is not None
