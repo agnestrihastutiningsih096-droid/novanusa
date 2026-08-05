@@ -103,13 +103,33 @@ def write_checkpoint(
     started_at: str,
     retries_used: int,
 ) -> None:
-    if source_rows_processed != canonical_rows_collected:
-        raise RuntimeError(
-            "strict checkpoint requires source_rows_processed to equal "
-            "canonical_rows_collected"
+    mode = config.get("mode")
+    if mode == "strict":
+        if source_rows_processed != canonical_rows_collected:
+            raise RuntimeError(
+                "strict checkpoint requires source_rows_processed to equal "
+                "canonical_rows_collected"
+            )
+        if quarantine_rows != 0:
+            raise RuntimeError("strict checkpoint requires quarantine_rows to be zero")
+    elif mode == "quarantine":
+        counters = (
+            source_rows_processed,
+            canonical_rows_collected,
+            quarantine_rows,
+            source_count,
+            page_count,
+            retries_used,
         )
-    if quarantine_rows != 0:
-        raise RuntimeError("strict checkpoint requires quarantine_rows to be zero")
+        if any(type(counter) is not int or counter < 0 for counter in counters):
+            raise RuntimeError("quarantine checkpoint counters must be non-negative integers")
+        if source_rows_processed != canonical_rows_collected + quarantine_rows:
+            raise RuntimeError(
+                "quarantine checkpoint requires source_rows_processed to equal "
+                "canonical_rows_collected plus quarantine_rows"
+            )
+    else:
+        raise RuntimeError(f"unsupported checkpoint mode: {mode!r}")
     checkpoint = {
         "checkpoint_version": CHECKPOINT_VERSION,
         "config": config,
@@ -161,8 +181,9 @@ def load_checkpoint(
         raise RuntimeError("checkpoint mode mismatch")
     if checkpoint_config_value != expected_config:
         raise RuntimeError("checkpoint configuration mismatch")
-    if checkpoint["config"].get("mode") != "strict":
-        raise RuntimeError("checkpoint mode must be strict")
+    mode = checkpoint["config"].get("mode")
+    if mode not in {"strict", "quarantine"}:
+        raise RuntimeError(f"unsupported checkpoint mode: {mode!r}")
     run_dir_value = checkpoint.get("run_dir")
     database_path_value = checkpoint.get("database_path")
     quarantine_path_value = checkpoint.get("quarantine_path")
@@ -171,6 +192,24 @@ def load_checkpoint(
     quarantine_rows = checkpoint.get("quarantine_rows")
     source_count = checkpoint.get("source_count")
     page_count = checkpoint.get("last_completed_page")
+    quarantine_accounting_is_invalid = mode == "quarantine" and (
+        any(
+            type(counter) is not int or counter < 0
+            for counter in (
+                source_rows_processed,
+                canonical_rows_collected,
+                quarantine_rows,
+                source_count,
+                page_count,
+                checkpoint.get("next_start"),
+                checkpoint.get("retries_used"),
+            )
+        )
+        or source_rows_processed != canonical_rows_collected + quarantine_rows
+    )
+    strict_accounting_is_invalid = mode == "strict" and (
+        source_rows_processed != canonical_rows_collected or quarantine_rows != 0
+    )
     if (
         not isinstance(run_dir_value, str)
         or not isinstance(database_path_value, str)
@@ -181,8 +220,8 @@ def load_checkpoint(
         or not isinstance(source_count, int)
         or not isinstance(page_count, int)
         or checkpoint.get("next_start") != source_rows_processed
-        or source_rows_processed != canonical_rows_collected
-        or quarantine_rows != 0
+        or strict_accounting_is_invalid
+        or quarantine_accounting_is_invalid
         or source_rows_processed < 0
         or source_count < 0
         or page_count < 0

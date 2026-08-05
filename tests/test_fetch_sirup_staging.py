@@ -369,6 +369,79 @@ class CheckpointV3Tests(unittest.TestCase):
                 loaded,
             )
 
+    def test_valid_quarantine_checkpoint_write_and_load(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            config = fetch_sirup_staging.checkpoint_config(
+                2026, 100, True, mode="quarantine"
+            )
+            fetch_sirup_staging.write_checkpoint(
+                checkpoint,
+                config,
+                root / "run",
+                source_rows_processed=200,
+                canonical_rows_collected=197,
+                quarantine_rows=3,
+                source_count=3_300_013,
+                page_count=2,
+                started_at="2026-08-04T00:00:00+00:00",
+                retries_used=1,
+            )
+
+            written = json.loads(checkpoint.read_text(encoding="utf-8"))
+            self.assertEqual(200, written["next_start"])
+            self.assertEqual(
+                (root / "run").resolve(),
+                fetch_sirup_staging.load_checkpoint(checkpoint, config)[0],
+            )
+
+    def test_invalid_quarantine_accounting_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            checkpoint = root / "checkpoint.json"
+            config = fetch_sirup_staging.checkpoint_config(
+                2026, 100, True, mode="quarantine"
+            )
+            with self.assertRaisesRegex(RuntimeError, "quarantine checkpoint requires"):
+                fetch_sirup_staging.write_checkpoint(
+                    checkpoint, config, root / "run", 200, 198, 3, 300, 2, "now", 0
+                )
+            fetch_sirup_staging.write_checkpoint(
+                checkpoint, config, root / "run", 200, 197, 3, 300, 2, "now", 0
+            )
+            invalid = json.loads(checkpoint.read_text(encoding="utf-8"))
+            invalid["canonical_rows_collected"] = 198
+            checkpoint.write_text(json.dumps(invalid), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "contents are inconsistent"):
+                fetch_sirup_staging.load_checkpoint(checkpoint, config)
+
+    def test_strict_behavior_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            with self.assertRaisesRegex(RuntimeError, "quarantine_rows to be zero"):
+                fetch_sirup_staging.write_checkpoint(
+                    checkpoint, self.config(), checkpoint.parent / "run",
+                    200, 200, 1, 300, 2, "now", 0,
+                )
+
+    def test_unsupported_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "checkpoint.json"
+            config = fetch_sirup_staging.checkpoint_config(
+                2026, 100, True, mode="future"
+            )
+            with self.assertRaisesRegex(RuntimeError, "unsupported checkpoint mode"):
+                fetch_sirup_staging.write_checkpoint(
+                    checkpoint, config, checkpoint.parent / "run",
+                    0, 0, 0, 0, 0, "now", 0,
+                )
+            written = self.write_checkpoint(checkpoint, checkpoint.parent / "run")
+            written["config"] = config
+            checkpoint.write_text(json.dumps(written), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "unsupported checkpoint mode"):
+                fetch_sirup_staging.load_checkpoint(checkpoint, config)
+
 
 class StrictRuntimeAccountingTests(unittest.TestCase):
     @staticmethod
