@@ -15,6 +15,67 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class ValidatePageClassifierIntegrationTests(unittest.TestCase):
+    def test_delegates_classification_and_returns_valid_rows_unchanged(self):
+        payload = {"recordsFiltered": 2, "data": [{"source": 1}, {"source": 2}]}
+        valid_rows = payload["data"]
+        classification = {
+            "valid_rows": valid_rows,
+            "invalid_rows": [],
+            "invalid_row_count": 0,
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "classify_page_rows",
+                return_value=classification,
+            ) as classify,
+        ):
+            result, source_count = validate_page(
+                Path(temporary_directory), payload, None, 2026, 0, 2, 1, False
+            )
+
+        classify.assert_called_once_with(payload, 2, fetch_sirup_staging.REQUIRED_FIELDS)
+        self.assertIs(valid_rows, result)
+        self.assertEqual(2, source_count)
+
+    def test_invalid_classifier_result_raises_with_validation_detail(self):
+        payload = {"recordsFiltered": 1, "data": ["bad"]}
+        classification = {
+            "valid_rows": [],
+            "invalid_rows": [{"validation_error": "row 0 is not an object"}],
+            "invalid_row_count": 1,
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "classify_page_rows",
+                return_value=classification,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "row 0 is not an object"):
+                validate_page(
+                    Path(temporary_directory), payload, None, 2026, 0, 1, 1, False
+                )
+
+    def test_source_count_mismatch_is_rejected_before_classification(self):
+        payload = {"recordsFiltered": 3, "data": []}
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(fetch_sirup_staging, "classify_page_rows") as classify,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "source record count changed: expected 2, observed 3"
+            ):
+                validate_page(
+                    Path(temporary_directory), payload, 2, 2026, 0, 1, 1, False
+                )
+
+        classify.assert_not_called()
+
+
 class CliModeBoundaryTests(unittest.TestCase):
     def test_mode_defaults_to_strict(self):
         with mock.patch.object(sys, "argv", ["fetch_sirup_staging.py", "--year", "2026"]):

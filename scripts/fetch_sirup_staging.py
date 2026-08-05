@@ -13,6 +13,8 @@ from typing import Any
 import duckdb
 import requests
 
+from sirup_page_classifier import classify_page_rows
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ENDPOINT = "https://sirup.inaproc.id/sirup/caripaketctr/search"
@@ -237,30 +239,6 @@ def fetch_page(
     raise RuntimeError(f"source request failed after {retries + 1} attempts: {last_error}")
 
 
-def validate_rows(payload: dict[str, Any], expected_count: int) -> list[dict[str, Any]]:
-    rows = payload.get("data")
-    if not isinstance(rows, list):
-        raise RuntimeError("response field 'data' is not an array")
-    if len(rows) != expected_count:
-        raise RuntimeError(f"expected {expected_count} rows but source returned {len(rows)}")
-    if not isinstance(payload.get("recordsFiltered"), int):
-        raise RuntimeError("response field 'recordsFiltered' is not an integer")
-
-    identifiers: list[Any] = []
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise RuntimeError(f"row {index} is not an object")
-        missing = sorted(REQUIRED_FIELDS - row.keys())
-        if missing:
-            raise RuntimeError(f"row {index} is missing fields: {', '.join(missing)}")
-        if row["id"] is None:
-            raise RuntimeError(f"row {index} has a null id")
-        identifiers.append(row["id"])
-    if len(set(identifiers)) != len(identifiers):
-        raise RuntimeError("source returned duplicate ids")
-    return rows
-
-
 def verify_source_count(expected: int | None, observed: int) -> int:
     if expected is not None and observed != expected:
         raise RuntimeError(
@@ -325,8 +303,15 @@ def validate_page(
         expected_page_count = length
         if full_snapshot:
             expected_page_count = min(length, verified_source_count - start)
-        rows = validate_rows(payload, expected_page_count)
-        return rows, verified_source_count
+        classification = classify_page_rows(
+            payload, expected_page_count, REQUIRED_FIELDS
+        )
+        if classification["invalid_row_count"] > 0:
+            detail = "; ".join(
+                row["validation_error"] for row in classification["invalid_rows"]
+            )
+            raise RuntimeError(f"page row validation failed: {detail}")
+        return classification["valid_rows"], verified_source_count
     except RuntimeError as exc:
         try:
             write_validation_failure_evidence(
