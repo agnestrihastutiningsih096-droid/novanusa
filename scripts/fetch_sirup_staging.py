@@ -14,6 +14,7 @@ import duckdb
 import requests
 
 from sirup_page_classifier import classify_page_rows
+from sirup_quarantine_store import build_quarantine_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -375,6 +376,36 @@ def prepare_page_transaction(
         },
         "captured_at": captured_at,
     }
+
+
+def build_page_quarantine_records(
+    prepared_transaction: dict[str, Any],
+    run_id: str,
+    failure_evidence_path: Path | str,
+) -> list[dict[str, Any]]:
+    classification = prepared_transaction["classification"]
+    payload_sha256 = prepared_transaction["payload_sha256"]
+    request_parameters = prepared_transaction["request_parameters"]
+    page_identity = prepared_transaction["page_identity"]
+    captured_at = prepared_transaction["captured_at"]
+    return [
+        build_quarantine_record(
+            run_id=run_id,
+            page_start=page_identity["page_start"],
+            requested_length=page_identity["requested_length"],
+            page_draw=page_identity["page_draw"],
+            row_index=invalid_row["row_index"],
+            raw_row=invalid_row["raw_row"],
+            missing_fields=invalid_row["missing_fields"],
+            invalid_fields=invalid_row["invalid_fields"],
+            validation_error=invalid_row["validation_error"],
+            captured_at=captured_at,
+            payload_sha256=payload_sha256,
+            request_parameters=request_parameters,
+            failure_evidence_path=str(failure_evidence_path),
+        )
+        for invalid_row in classification["invalid_rows"]
+    ]
 
 
 def validate_page(

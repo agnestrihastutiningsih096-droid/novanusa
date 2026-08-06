@@ -15,6 +15,149 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class BuildPageQuarantineRecordsTests(unittest.TestCase):
+    def make_prepared_transaction(self, invalid_rows):
+        return {
+            "classification": {
+                "valid_rows": [],
+                "invalid_rows": invalid_rows,
+                "invalid_row_count": len(invalid_rows),
+            },
+            "verified_source_count": 10,
+            "payload_sha256": "a" * 64,
+            "request_parameters": {"start": 100, "length": 2},
+            "page_identity": {
+                "run_id": "prepared-run",
+                "page_start": 100,
+                "requested_length": 2,
+                "page_draw": 3,
+                "payload_sha256": "a" * 64,
+            },
+            "captured_at": "2026-08-06T01:02:03+00:00",
+        }
+
+    def test_builds_each_record_in_source_order_with_exact_arguments(self):
+        first_raw = ["unparsed", 1]
+        first_missing = ["id"]
+        first_invalid = []
+        second_raw = {"id": 9, "pagu": "bad"}
+        second_missing = []
+        second_invalid = ["pagu"]
+        invalid_rows = [
+            {
+                "row_index": 0,
+                "raw_row": first_raw,
+                "missing_fields": first_missing,
+                "invalid_fields": first_invalid,
+                "validation_error": "row is not an object",
+            },
+            {
+                "row_index": 1,
+                "raw_row": second_raw,
+                "missing_fields": second_missing,
+                "invalid_fields": second_invalid,
+                "validation_error": "invalid pagu",
+            },
+        ]
+        prepared = self.make_prepared_transaction(invalid_rows)
+        prepared_before = json.loads(json.dumps(prepared))
+        first_record = {"record": 1}
+        second_record = {"record": 2}
+        evidence_path = Path("evidence") / "page.json"
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_quarantine_record",
+                side_effect=[first_record, second_record],
+            ) as builder,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append_page,
+            mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write_checkpoint,
+            mock.patch.object(
+                fetch_sirup_staging, "write_validation_failure_evidence"
+            ) as write_evidence,
+        ):
+            result = fetch_sirup_staging.build_page_quarantine_records(
+                prepared, "run-1", evidence_path
+            )
+
+        self.assertEqual(2, builder.call_count)
+        expected_common = {
+            "run_id": "run-1",
+            "page_start": 100,
+            "requested_length": 2,
+            "page_draw": 3,
+            "captured_at": "2026-08-06T01:02:03+00:00",
+            "payload_sha256": "a" * 64,
+            "request_parameters": prepared["request_parameters"],
+            "failure_evidence_path": str(evidence_path),
+        }
+        expected_calls = [
+            mock.call(
+                row_index=0, raw_row=first_raw, missing_fields=first_missing,
+                invalid_fields=first_invalid,
+                validation_error="row is not an object", **expected_common,
+            ),
+            mock.call(
+                row_index=1, raw_row=second_raw, missing_fields=second_missing,
+                invalid_fields=second_invalid,
+                validation_error="invalid pagu", **expected_common,
+            ),
+        ]
+        self.assertEqual(expected_calls, builder.call_args_list)
+        self.assertIs(first_raw, builder.call_args_list[0].kwargs["raw_row"])
+        self.assertIs(first_missing, builder.call_args_list[0].kwargs["missing_fields"])
+        self.assertIs(second_invalid, builder.call_args_list[1].kwargs["invalid_fields"])
+        self.assertIs(first_record, result[0])
+        self.assertIs(second_record, result[1])
+        self.assertEqual(prepared_before, prepared)
+        append_page.assert_not_called()
+        write_checkpoint.assert_not_called()
+        write_evidence.assert_not_called()
+
+    def test_empty_invalid_rows_returns_empty_without_builder_call(self):
+        prepared = self.make_prepared_transaction([])
+        with mock.patch.object(
+            fetch_sirup_staging, "build_quarantine_record"
+        ) as builder:
+            result = fetch_sirup_staging.build_page_quarantine_records(
+                prepared, "run-1", "evidence/page.json"
+            )
+
+        self.assertEqual([], result)
+        builder.assert_not_called()
+
+    def test_builder_error_propagates_unchanged(self):
+        invalid_row = {
+            "row_index": 0,
+            "raw_row": "bad",
+            "missing_fields": [],
+            "invalid_fields": [],
+            "validation_error": "bad row",
+        }
+        error = ValueError("builder rejected row")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_quarantine_record",
+                side_effect=error,
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "write_validation_failure_evidence"
+            ) as write_evidence,
+        ):
+            with self.assertRaises(ValueError) as raised:
+                fetch_sirup_staging.build_page_quarantine_records(
+                    self.make_prepared_transaction([invalid_row]),
+                    "run-1",
+                    "evidence/page.json",
+                )
+
+        self.assertIs(error, raised.exception)
+        write_evidence.assert_not_called()
+
+
 class PreparePageTransactionTests(unittest.TestCase):
     def test_prepares_read_only_transaction_with_exact_values(self):
         payload = {
