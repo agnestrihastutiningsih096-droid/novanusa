@@ -1461,7 +1461,7 @@ class CliModeBoundaryTests(unittest.TestCase):
                     ),
                 )
 
-    def test_quarantine_mode_is_rejected_before_collector_setup(self):
+    def test_quarantine_mode_requires_checkpoint_without_old_runtime_guard(self):
         arguments = [
             "fetch_sirup_staging.py",
             "--year",
@@ -1476,8 +1476,9 @@ class CliModeBoundaryTests(unittest.TestCase):
         ):
             self.assertEqual(1, fetch_sirup_staging.main())
 
-        session.assert_not_called()
-        self.assertEqual("quarantine mode is not implemented\n", stderr.getvalue())
+        session.assert_called_once_with()
+        self.assertIn("quarantine mode requires --checkpoint", stderr.getvalue())
+        self.assertNotIn("quarantine mode is not implemented", stderr.getvalue())
 
 
 class CheckpointAtomicWriteTests(unittest.TestCase):
@@ -1784,6 +1785,200 @@ class CheckpointV3Tests(unittest.TestCase):
                 fetch_sirup_staging.load_checkpoint(checkpoint, config)
 
 
+class QuarantineRuntimeIntegrationTests(unittest.TestCase):
+    def arguments(self, staging_root, checkpoint):
+        return [
+            "fetch_sirup_staging.py",
+            "--year",
+            "2026",
+            "--mode",
+            "quarantine",
+            "--page-size",
+            "2",
+            "--max-rows",
+            "2",
+            "--staging-root",
+            str(staging_root),
+            "--checkpoint",
+            str(checkpoint),
+        ]
+
+    def test_one_page_uses_prepare_then_orchestration_and_advances_accounting(self):
+        payload = {"recordsFiltered": 2, "data": [{"id": 1}, {"bad": True}]}
+        prepared = {
+            "verified_source_count": 2,
+            "classification": {
+                "valid_rows": [{"id": 1}],
+                "invalid_rows": [{"row_index": 1}],
+            },
+        }
+        events = []
+
+        def prepare(*args):
+            events.append("prepare")
+            return prepared
+
+        def persist(*args):
+            events.append("persist")
+            self.assertEqual(0, args[6])
+            self.assertEqual(0, args[7])
+            self.assertEqual(0, args[8])
+            self.assertEqual(2, args[12])
+            self.assertEqual(1, args[13])
+            self.assertEqual(1, args[15])
+            return {
+                "persistence_result": {"persisted": True},
+                "next_accounting": {
+                    "source_rows_processed": 2,
+                    "canonical_rows_collected": 1,
+                    "quarantine_rows": 1,
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            checkpoint = staging_root / "checkpoint.json"
+            with (
+                mock.patch.object(sys, "argv", self.arguments(staging_root, checkpoint)),
+                mock.patch.object(fetch_sirup_staging, "initialize_database"),
+                mock.patch.object(
+                    fetch_sirup_staging, "fetch_page", return_value=(payload, 1)
+                ) as fetch,
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "prepare_page_transaction",
+                    side_effect=prepare,
+                ) as prepare_page,
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "persist_account_and_checkpoint_page",
+                    side_effect=persist,
+                ) as persist_page,
+                mock.patch.object(fetch_sirup_staging, "validate_page") as validate,
+                mock.patch.object(fetch_sirup_staging, "append_page") as append,
+                mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint_write,
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "verify_database",
+                    return_value=(1, 1, 1, 1),
+                ) as verify,
+                mock.patch.object(fetch_sirup_staging, "sha256_file", return_value="digest"),
+                mock.patch("sys.stderr", io.StringIO()) as stderr,
+            ):
+                self.assertEqual(0, fetch_sirup_staging.main())
+
+            self.assertEqual(["prepare", "persist"], events)
+            fetch.assert_called_once()
+            prepare_page.assert_called_once()
+            prepare_args = prepare_page.call_args.args
+            self.assertIs(payload, prepare_args[0])
+            self.assertEqual((None, mock.ANY, 2026, 0, 2, 1, False), prepare_args[1:])
+            persist_page.assert_called_once()
+            persist_args = persist_page.call_args.args
+            run_dir = persist_args[11]
+            self.assertEqual(run_dir / "sirup_staging.duckdb", persist_args[0])
+            self.assertEqual(run_dir / fetch_sirup_staging.QUARANTINE_PATH_NAME, persist_args[1])
+            self.assertIs(prepared, persist_args[2])
+            self.assertEqual(
+                run_dir / "failures" / "page-start-0-draw-1.json",
+                persist_args[5],
+            )
+            validate.assert_not_called()
+            append.assert_not_called()
+            checkpoint_write.assert_not_called()
+            verify.assert_called_once()
+            self.assertNotIn("quarantine mode is not implemented", stderr.getvalue())
+
+    def test_preparation_failure_prevents_persistence(self):
+        error = RuntimeError("preparation failed")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            checkpoint = staging_root / "checkpoint.json"
+            with (
+                mock.patch.object(sys, "argv", self.arguments(staging_root, checkpoint)),
+                mock.patch.object(fetch_sirup_staging, "initialize_database"),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "fetch_page",
+                    return_value=({"recordsFiltered": 2, "data": []}, 0),
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "prepare_page_transaction",
+                    side_effect=error,
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging, "persist_account_and_checkpoint_page"
+                ) as persist,
+                mock.patch("sys.stderr", io.StringIO()) as stderr,
+            ):
+                self.assertEqual(1, fetch_sirup_staging.main())
+            persist.assert_not_called()
+            self.assertIn("preparation failed", stderr.getvalue())
+
+    def test_orchestration_failure_does_not_reach_final_validation(self):
+        error = OSError("page persistence failed")
+        prepared = {"verified_source_count": 2, "classification": {}}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            checkpoint = staging_root / "checkpoint.json"
+            with (
+                mock.patch.object(sys, "argv", self.arguments(staging_root, checkpoint)),
+                mock.patch.object(fetch_sirup_staging, "initialize_database"),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "fetch_page",
+                    return_value=({"recordsFiltered": 2, "data": []}, 1),
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "prepare_page_transaction",
+                    return_value=prepared,
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "persist_account_and_checkpoint_page",
+                    side_effect=error,
+                ) as persist,
+                mock.patch.object(fetch_sirup_staging, "verify_database") as verify,
+                mock.patch("sys.stderr", io.StringIO()) as stderr,
+            ):
+                self.assertEqual(1, fetch_sirup_staging.main())
+            persist.assert_called_once()
+            self.assertEqual((0, 0, 0), persist.call_args.args[6:9])
+            verify.assert_not_called()
+            self.assertIn("page persistence failed", stderr.getvalue())
+
+    def test_resume_reconciles_quarantine_store_before_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory)
+            run_dir = staging_root.resolve() / "run"
+            run_dir.mkdir()
+            (run_dir / "sirup_staging.duckdb").touch()
+            checkpoint = staging_root / "checkpoint.json"
+            checkpoint.touch()
+            arguments = self.arguments(staging_root, checkpoint)
+            loaded = (run_dir, 2, 1, 1, 10, 1, "started", 0)
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch.object(
+                    fetch_sirup_staging, "load_checkpoint", return_value=loaded
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging, "verify_database", return_value=(1, 1, 1, 1)
+                ),
+                mock.patch.object(
+                    fetch_sirup_staging, "count_quarantine_records", return_value=0
+                ) as count,
+                mock.patch.object(fetch_sirup_staging, "fetch_page") as fetch,
+                mock.patch("sys.stderr", io.StringIO()) as stderr,
+            ):
+                self.assertEqual(1, fetch_sirup_staging.main())
+            count.assert_called_once_with(run_dir / fetch_sirup_staging.QUARANTINE_PATH_NAME)
+            fetch.assert_not_called()
+            self.assertIn("quarantine count", stderr.getvalue())
+
+
 class StrictRuntimeAccountingTests(unittest.TestCase):
     @staticmethod
     def valid_row(identifier: int) -> dict[str, object]:
@@ -1863,8 +2058,19 @@ class StrictRuntimeAccountingTests(unittest.TestCase):
                     fetch_sirup_staging, "fetch_page", return_value=(payload, 0)
                 ) as fetch_page,
                 mock.patch.object(
+                    fetch_sirup_staging,
+                    "validate_page",
+                    wraps=fetch_sirup_staging.validate_page,
+                ) as validate_page,
+                mock.patch.object(
                     fetch_sirup_staging, "append_page", side_effect=append_page
-                ),
+                ) as append,
+                mock.patch.object(
+                    fetch_sirup_staging, "prepare_page_transaction"
+                ) as prepare,
+                mock.patch.object(
+                    fetch_sirup_staging, "persist_account_and_checkpoint_page"
+                ) as quarantine_persist,
                 mock.patch.object(
                     fetch_sirup_staging,
                     "write_checkpoint",
@@ -1881,6 +2087,10 @@ class StrictRuntimeAccountingTests(unittest.TestCase):
 
             self.assertEqual(0, fetch_page.call_args.kwargs["start"])
             self.assertEqual(["append", "checkpoint"], events)
+            validate_page.assert_called_once()
+            append.assert_called_once()
+            prepare.assert_not_called()
+            quarantine_persist.assert_not_called()
 
     def test_resume_reconciles_database_with_canonical_counter(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

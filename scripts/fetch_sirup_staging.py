@@ -824,9 +824,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.mode == "quarantine":
-        print("quarantine mode is not implemented", file=sys.stderr)
-        return 1
     session = requests.Session()
     session.headers.update({
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -840,6 +837,8 @@ def main() -> int:
             args.year, args.page_size, args.full_snapshot, args.mode
         )
         checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
+        if args.mode == "quarantine" and checkpoint_path is None:
+            raise RuntimeError("quarantine mode requires --checkpoint")
         if checkpoint_path and checkpoint_path.is_file():
             (
                 run_dir,
@@ -864,6 +863,14 @@ def main() -> int:
                 raise RuntimeError("checkpoint canonical count does not match staging database")
             if not args.full_snapshot and canonical_rows_collected > args.max_rows:
                 raise RuntimeError("checkpoint contains more rows than --max-rows")
+            if args.mode == "quarantine":
+                actual_quarantine_count = count_quarantine_records(
+                    run_dir / QUARANTINE_PATH_NAME
+                )
+                if actual_quarantine_count != quarantine_rows:
+                    raise RuntimeError(
+                        "checkpoint quarantine count does not match quarantine store"
+                    )
         else:
             started_at = utc_now()
             requested_label = "full" if args.full_snapshot else f"{args.max_rows}rows"
@@ -904,36 +911,85 @@ def main() -> int:
                 timeout=args.timeout,
                 retries=args.retries,
             )
-            page_rows, expected_source_count = validate_page(
-                run_dir,
-                payload,
-                expected_source_count,
-                args.year,
-                source_rows_processed,
-                length,
-                page_count + 1,
-                args.full_snapshot,
-            )
-            if args.full_snapshot:
-                target_row_count = expected_source_count
-            append_page(database_path, page_rows)
-            source_rows_processed += len(page_rows)
-            canonical_rows_collected += len(page_rows)
-            retries_used += page_retries
-            page_count += 1
-            if checkpoint_path:
-                write_checkpoint(
+            if args.mode == "strict":
+                page_rows, expected_source_count = validate_page(
+                    run_dir,
+                    payload,
+                    expected_source_count,
+                    args.year,
+                    source_rows_processed,
+                    length,
+                    page_count + 1,
+                    args.full_snapshot,
+                )
+                if args.full_snapshot:
+                    target_row_count = expected_source_count
+                append_page(database_path, page_rows)
+                source_rows_processed += len(page_rows)
+                canonical_rows_collected += len(page_rows)
+                retries_used += page_retries
+                page_count += 1
+                if checkpoint_path:
+                    write_checkpoint(
+                        checkpoint_path,
+                        config,
+                        run_dir,
+                        source_rows_processed=source_rows_processed,
+                        canonical_rows_collected=canonical_rows_collected,
+                        quarantine_rows=quarantine_rows,
+                        source_count=expected_source_count,
+                        page_count=page_count,
+                        started_at=started_at,
+                        retries_used=retries_used,
+                    )
+            else:
+                prepared_transaction = prepare_page_transaction(
+                    payload,
+                    expected_source_count,
+                    run_id,
+                    args.year,
+                    source_rows_processed,
+                    length,
+                    page_count + 1,
+                    args.full_snapshot,
+                )
+                expected_source_count = prepared_transaction["verified_source_count"]
+                if args.full_snapshot:
+                    target_row_count = expected_source_count
+                failure_evidence_path = (
+                    run_dir
+                    / "failures"
+                    / (
+                        f"page-start-{source_rows_processed}-"
+                        f"draw-{page_count + 1}.json"
+                    )
+                )
+                page_result = persist_account_and_checkpoint_page(
+                    database_path,
+                    run_dir / QUARANTINE_PATH_NAME,
+                    prepared_transaction,
+                    quarantine_rows,
+                    run_id,
+                    failure_evidence_path,
+                    source_rows_processed,
+                    canonical_rows_collected,
+                    quarantine_rows,
                     checkpoint_path,
                     config,
                     run_dir,
-                    source_rows_processed=source_rows_processed,
-                    canonical_rows_collected=canonical_rows_collected,
-                    quarantine_rows=quarantine_rows,
-                    source_count=expected_source_count,
-                    page_count=page_count,
-                    started_at=started_at,
-                    retries_used=retries_used,
+                    expected_source_count,
+                    page_count + 1,
+                    started_at,
+                    retries_used + page_retries,
                 )
+                next_accounting = page_result["next_accounting"]
+                source_rows_processed = next_accounting["source_rows_processed"]
+                canonical_rows_collected = next_accounting[
+                    "canonical_rows_collected"
+                ]
+                quarantine_rows = next_accounting["quarantine_rows"]
+                retries_used += page_retries
+                page_count += 1
             if (
                 args.stop_after_rows is not None
                 and source_rows_processed >= args.stop_after_rows
