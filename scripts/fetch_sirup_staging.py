@@ -685,6 +685,56 @@ def derive_next_page_accounting(
     return next_accounting
 
 
+def persist_account_and_checkpoint_page(
+    database_path,
+    quarantine_path,
+    prepared_transaction,
+    expected_prior_quarantine_count,
+    run_id,
+    failure_evidence_path,
+    source_rows_processed,
+    canonical_rows_collected,
+    quarantine_rows,
+    checkpoint_path,
+    config,
+    run_dir,
+    source_count,
+    page_count,
+    started_at,
+    retries_used,
+):
+    persistence_result = persist_prepared_page_transaction(
+        database_path,
+        quarantine_path,
+        prepared_transaction,
+        expected_prior_quarantine_count,
+        run_id,
+        failure_evidence_path,
+    )
+    next_accounting = derive_next_page_accounting(
+        source_rows_processed,
+        canonical_rows_collected,
+        quarantine_rows,
+        persistence_result,
+    )
+    write_checkpoint(
+        checkpoint_path,
+        config,
+        run_dir,
+        next_accounting["source_rows_processed"],
+        next_accounting["canonical_rows_collected"],
+        next_accounting["quarantine_rows"],
+        source_count,
+        page_count,
+        started_at,
+        retries_used,
+    )
+    return {
+        "persistence_result": persistence_result,
+        "next_accounting": next_accounting,
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",

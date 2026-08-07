@@ -15,6 +15,175 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class PersistAccountAndCheckpointPageTests(unittest.TestCase):
+    def arguments(self):
+        return {
+            "database_path": Path("canonical.duckdb"),
+            "quarantine_path": Path("quarantine"),
+            "prepared_transaction": {"classification": {"valid_rows": []}},
+            "expected_prior_quarantine_count": 3,
+            "run_id": "run-1",
+            "failure_evidence_path": Path("failure.json"),
+            "source_rows_processed": 8,
+            "canonical_rows_collected": 5,
+            "quarantine_rows": 3,
+            "checkpoint_path": Path("checkpoint.json"),
+            "config": {"mode": "quarantine"},
+            "run_dir": Path("run"),
+            "source_count": 100,
+            "page_count": 4,
+            "started_at": "2026-08-07T00:00:00+00:00",
+            "retries_used": 2,
+        }
+
+    def test_success_calls_boundaries_in_order_and_returns_exact_results(self):
+        arguments = self.arguments()
+        persistence_result = {
+            "canonical_status": "created",
+            "canonical_count": 2,
+            "quarantine_created_count": 1,
+            "quarantine_existing_count": 0,
+            "quarantine_total_count": 4,
+            "page_valid_row_count": 2,
+            "page_invalid_row_count": 1,
+        }
+        next_accounting = {
+            "source_rows_processed": 11,
+            "canonical_rows_collected": 7,
+            "quarantine_rows": 4,
+        }
+        order = mock.Mock()
+        persist = mock.Mock(return_value=persistence_result)
+        accounting = mock.Mock(return_value=next_accounting)
+        checkpoint = mock.Mock()
+        order.attach_mock(persist, "persist")
+        order.attach_mock(accounting, "accounting")
+        order.attach_mock(checkpoint, "checkpoint")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "persist_prepared_page_transaction", persist
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "derive_next_page_accounting", accounting
+            ),
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint", checkpoint),
+        ):
+            result = fetch_sirup_staging.persist_account_and_checkpoint_page(
+                **arguments
+            )
+
+        persist.assert_called_once_with(
+            arguments["database_path"],
+            arguments["quarantine_path"],
+            arguments["prepared_transaction"],
+            arguments["expected_prior_quarantine_count"],
+            arguments["run_id"],
+            arguments["failure_evidence_path"],
+        )
+        accounting.assert_called_once_with(8, 5, 3, persistence_result)
+        checkpoint.assert_called_once_with(
+            arguments["checkpoint_path"],
+            arguments["config"],
+            arguments["run_dir"],
+            11,
+            7,
+            4,
+            arguments["source_count"],
+            arguments["page_count"],
+            arguments["started_at"],
+            arguments["retries_used"],
+        )
+        self.assertEqual(
+            ["persist", "accounting", "checkpoint"],
+            [call[0] for call in order.mock_calls],
+        )
+        self.assertEqual(
+            {
+                "persistence_result": persistence_result,
+                "next_accounting": next_accounting,
+            },
+            result,
+        )
+        self.assertIs(persistence_result, result["persistence_result"])
+        self.assertIs(next_accounting, result["next_accounting"])
+        self.assertIs(arguments["prepared_transaction"], persist.call_args.args[2])
+        self.assertIs(arguments["config"], checkpoint.call_args.args[1])
+        self.assertIs(arguments["run_dir"], checkpoint.call_args.args[2])
+
+    def test_persistence_exception_propagates_and_stops(self):
+        error = OSError("persistence failed")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "persist_prepared_page_transaction",
+                side_effect=error,
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "derive_next_page_accounting"
+            ) as accounting,
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+        ):
+            with self.assertRaises(OSError) as raised:
+                fetch_sirup_staging.persist_account_and_checkpoint_page(
+                    **self.arguments()
+                )
+        self.assertIs(error, raised.exception)
+        accounting.assert_not_called()
+        checkpoint.assert_not_called()
+
+    def test_accounting_exception_propagates_and_prevents_checkpoint(self):
+        error = ValueError("accounting failed")
+        persistence_result = {"result": "persisted"}
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "persist_prepared_page_transaction",
+                return_value=persistence_result,
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "derive_next_page_accounting",
+                side_effect=error,
+            ) as accounting,
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+        ):
+            with self.assertRaises(ValueError) as raised:
+                fetch_sirup_staging.persist_account_and_checkpoint_page(
+                    **self.arguments()
+                )
+        self.assertIs(error, raised.exception)
+        accounting.assert_called_once_with(8, 5, 3, persistence_result)
+        checkpoint.assert_not_called()
+
+    def test_checkpoint_exception_propagates_without_success_return(self):
+        error = PermissionError("checkpoint failed")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "persist_prepared_page_transaction",
+                return_value={"persisted": True},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "derive_next_page_accounting",
+                return_value={
+                    "source_rows_processed": 9,
+                    "canonical_rows_collected": 6,
+                    "quarantine_rows": 3,
+                },
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint", side_effect=error
+            ) as checkpoint,
+        ):
+            with self.assertRaises(PermissionError) as raised:
+                fetch_sirup_staging.persist_account_and_checkpoint_page(
+                    **self.arguments()
+                )
+        self.assertIs(error, raised.exception)
+        checkpoint.assert_called_once()
+
+
 class DeriveNextPageAccountingTests(unittest.TestCase):
     def persistence_result(
         self,
