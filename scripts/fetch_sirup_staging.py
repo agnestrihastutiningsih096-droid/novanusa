@@ -14,7 +14,11 @@ import duckdb
 import requests
 
 from sirup_page_classifier import classify_page_rows
-from sirup_quarantine_store import build_quarantine_record
+from sirup_quarantine_store import (
+    append_quarantine_record,
+    build_quarantine_record,
+    count_quarantine_records,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -406,6 +410,39 @@ def build_page_quarantine_records(
         )
         for invalid_row in classification["invalid_rows"]
     ]
+
+
+def append_page_quarantine_records(
+    quarantine_path,
+    quarantine_records,
+    expected_prior_count,
+):
+    if type(expected_prior_count) is not int or expected_prior_count < 0:
+        raise ValueError("expected_prior_count must be a non-negative integer")
+
+    created_count = 0
+    existing_count = 0
+    for record in quarantine_records:
+        append_result = append_quarantine_record(quarantine_path, record)
+        if append_result == "created":
+            created_count += 1
+        elif append_result == "existing":
+            existing_count += 1
+        else:
+            raise RuntimeError(f"unexpected quarantine append result: {append_result!r}")
+
+    actual_total_count = count_quarantine_records(quarantine_path)
+    expected_total_count = expected_prior_count + len(quarantine_records)
+    if actual_total_count != expected_total_count:
+        raise RuntimeError(
+            "quarantine record count mismatch: "
+            f"expected {expected_total_count}, observed {actual_total_count}"
+        )
+    return {
+        "created_count": created_count,
+        "existing_count": existing_count,
+        "total_count": actual_total_count,
+    }
 
 
 def validate_page(

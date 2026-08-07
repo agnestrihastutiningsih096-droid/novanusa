@@ -15,6 +15,153 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class AppendPageQuarantineRecordsTests(unittest.TestCase):
+    def call_helper(self, records, expected_prior_count):
+        return fetch_sirup_staging.append_page_quarantine_records(
+            Path("unused-quarantine"), records, expected_prior_count
+        )
+
+    def test_all_records_created(self):
+        records = [{"id": 1}, {"id": 2}]
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                side_effect=["created", "created"],
+            ) as append,
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=5
+            ) as count,
+        ):
+            result = self.call_helper(records, 3)
+
+        self.assertEqual(
+            {"created_count": 2, "existing_count": 0, "total_count": 5}, result
+        )
+        self.assertEqual(
+            [mock.call(Path("unused-quarantine"), record) for record in records],
+            append.call_args_list,
+        )
+        count.assert_called_once_with(Path("unused-quarantine"))
+
+    def test_mix_of_created_and_existing(self):
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                side_effect=["created", "existing", "created"],
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=7
+            ),
+        ):
+            result = self.call_helper([{"id": 1}, {"id": 2}, {"id": 3}], 4)
+
+        self.assertEqual(
+            {"created_count": 2, "existing_count": 1, "total_count": 7}, result
+        )
+
+    def test_partial_page_replay_uses_record_count_for_cumulative_invariant(self):
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                side_effect=["existing", "existing", "created"],
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=13
+            ),
+        ):
+            result = self.call_helper([{"id": 1}, {"id": 2}, {"id": 3}], 10)
+
+        self.assertEqual(
+            {"created_count": 1, "existing_count": 2, "total_count": 13}, result
+        )
+
+    def test_empty_records_still_counts_once(self):
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "append_quarantine_record"
+            ) as append,
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=4
+            ) as count,
+        ):
+            result = self.call_helper([], 4)
+
+        self.assertEqual(
+            {"created_count": 0, "existing_count": 0, "total_count": 4}, result
+        )
+        append.assert_not_called()
+        count.assert_called_once_with(Path("unused-quarantine"))
+
+    def test_invalid_expected_prior_counts_fail_before_store_calls(self):
+        for invalid_value in (-1, True, 1.0):
+            with self.subTest(invalid_value=invalid_value), mock.patch.object(
+                fetch_sirup_staging, "append_quarantine_record"
+            ) as append, mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records"
+            ) as count:
+                with self.assertRaises(ValueError):
+                    self.call_helper([{"id": 1}], invalid_value)
+                append.assert_not_called()
+                count.assert_not_called()
+
+    def test_unexpected_append_status_raises_and_does_not_count(self):
+        records = [{"id": 1}, {"id": 2}]
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                side_effect=["created", "invalid"],
+            ) as append,
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records"
+            ) as count,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected quarantine append"):
+                self.call_helper(records, 0)
+
+        self.assertEqual(2, append.call_count)
+        count.assert_not_called()
+
+    def test_append_exception_propagates_unchanged_and_stops(self):
+        error = OSError("append failed")
+        records = [{"id": 1}, {"id": 2}, {"id": 3}]
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                side_effect=["created", error, "created"],
+            ) as append,
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records"
+            ) as count,
+        ):
+            with self.assertRaises(OSError) as raised:
+                self.call_helper(records, 0)
+
+        self.assertIs(error, raised.exception)
+        self.assertEqual(2, append.call_count)
+        count.assert_not_called()
+
+    def test_cumulative_count_mismatch_reports_expected_and_observed(self):
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_quarantine_record",
+                return_value="existing",
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=8
+            ) as count,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "expected 7, observed 8"):
+                self.call_helper([{"id": 1}, {"id": 2}], 5)
+
+        count.assert_called_once_with(Path("unused-quarantine"))
+
+
 class BuildPageQuarantineRecordsTests(unittest.TestCase):
     def make_prepared_transaction(self, invalid_rows):
         return {
