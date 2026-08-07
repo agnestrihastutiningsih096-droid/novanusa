@@ -15,6 +15,137 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class ClassifyQuarantineResumePhysicalStateTests(unittest.TestCase):
+    def classify(
+        self,
+        canonical_rows_collected=10,
+        quarantine_rows=2,
+        database_rows=10,
+        distinct_ids=10,
+        actual_quarantine_count=2,
+        page_size=5,
+    ):
+        return fetch_sirup_staging.classify_quarantine_resume_physical_state(
+            canonical_rows_collected,
+            quarantine_rows,
+            database_rows,
+            distinct_ids,
+            actual_quarantine_count,
+            page_size,
+        )
+
+    def test_exact_consistent_state(self):
+        self.assertEqual(
+            {
+                "state": "consistent",
+                "canonical_ahead_count": 0,
+                "quarantine_ahead_count": 0,
+                "physical_ahead_count": 0,
+            },
+            self.classify(),
+        )
+
+    def test_canonical_ahead_by_one_page_is_replay_candidate(self):
+        self.assertEqual(
+            {
+                "state": "replay_candidate",
+                "canonical_ahead_count": 5,
+                "quarantine_ahead_count": 0,
+                "physical_ahead_count": 5,
+            },
+            self.classify(database_rows=15, distinct_ids=15),
+        )
+
+    def test_quarantine_ahead_by_one_page_is_replay_candidate(self):
+        result = self.classify(actual_quarantine_count=7)
+        self.assertEqual("replay_candidate", result["state"])
+        self.assertEqual((0, 5, 5), tuple(result.values())[1:])
+
+    def test_mixed_ahead_within_one_page_returns_exact_deltas(self):
+        self.assertEqual(
+            {
+                "state": "replay_candidate",
+                "canonical_ahead_count": 2,
+                "quarantine_ahead_count": 2,
+                "physical_ahead_count": 4,
+            },
+            self.classify(
+                database_rows=12, distinct_ids=12, actual_quarantine_count=4
+            ),
+        )
+
+    def test_physical_ahead_exactly_page_size_is_replay_candidate(self):
+        result = self.classify(
+            database_rows=13,
+            distinct_ids=13,
+            actual_quarantine_count=4,
+            page_size=5,
+        )
+        self.assertEqual("replay_candidate", result["state"])
+        self.assertEqual(5, result["physical_ahead_count"])
+
+    def test_physical_ahead_greater_than_page_size_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "more than one page"):
+            self.classify(database_rows=16, distinct_ids=16, page_size=5)
+
+    def test_physical_counts_behind_checkpoint_are_rejected(self):
+        cases = (
+            {"database_rows": 9, "distinct_ids": 9},
+            {"actual_quarantine_count": 1},
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                with self.assertRaisesRegex(RuntimeError, "trails checkpoint"):
+                    self.classify(**arguments)
+
+    def test_distinct_id_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "distinct ids"):
+            self.classify(database_rows=10, distinct_ids=9)
+
+    def test_invalid_page_sizes_are_rejected(self):
+        for page_size in (0, -1, True):
+            with self.subTest(page_size=page_size):
+                with self.assertRaises(ValueError):
+                    self.classify(page_size=page_size)
+
+    def test_negative_and_bool_counters_are_rejected(self):
+        names = (
+            "canonical_rows_collected",
+            "quarantine_rows",
+            "database_rows",
+            "distinct_ids",
+            "actual_quarantine_count",
+        )
+        for name in names:
+            for invalid_value in (-1, True):
+                with self.subTest(name=name, invalid_value=invalid_value):
+                    with self.assertRaises(ValueError):
+                        self.classify(**{name: invalid_value})
+
+    def test_helper_performs_no_io_or_persistence_operations(self):
+        with (
+            mock.patch.object(fetch_sirup_staging.duckdb, "connect") as connect,
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records"
+            ) as quarantine_count,
+            mock.patch.object(fetch_sirup_staging, "load_checkpoint") as load,
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as write,
+            mock.patch.object(
+                fetch_sirup_staging, "inspect_canonical_page_state"
+            ) as inspect,
+            mock.patch.object(
+                fetch_sirup_staging, "append_canonical_page_replay_safe"
+            ) as append,
+            mock.patch.object(
+                fetch_sirup_staging, "persist_prepared_page_transaction"
+            ) as persist,
+        ):
+            result = self.classify(database_rows=11, distinct_ids=11)
+        self.assertEqual("replay_candidate", result["state"])
+        for operation in (connect, quarantine_count, load, write, inspect, append, persist):
+            operation.assert_not_called()
+
+
 class PersistAccountAndCheckpointPageTests(unittest.TestCase):
     def arguments(self):
         return {

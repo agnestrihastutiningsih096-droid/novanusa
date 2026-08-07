@@ -735,6 +735,52 @@ def persist_account_and_checkpoint_page(
     }
 
 
+def classify_quarantine_resume_physical_state(
+    canonical_rows_collected,
+    quarantine_rows,
+    database_rows,
+    distinct_ids,
+    actual_quarantine_count,
+    page_size,
+):
+    numeric_arguments = {
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+        "database_rows": database_rows,
+        "distinct_ids": distinct_ids,
+        "actual_quarantine_count": actual_quarantine_count,
+        "page_size": page_size,
+    }
+    for name, value in numeric_arguments.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    if page_size < 1:
+        raise ValueError("page_size must be at least 1")
+
+    if distinct_ids != database_rows:
+        raise RuntimeError("physical canonical row count does not match distinct ids")
+    if database_rows < canonical_rows_collected:
+        raise RuntimeError("physical canonical count trails checkpoint")
+    if actual_quarantine_count < quarantine_rows:
+        raise RuntimeError("physical quarantine count trails checkpoint")
+
+    canonical_ahead_count = database_rows - canonical_rows_collected
+    quarantine_ahead_count = actual_quarantine_count - quarantine_rows
+    physical_ahead_count = canonical_ahead_count + quarantine_ahead_count
+    if physical_ahead_count == 0:
+        state = "consistent"
+    elif physical_ahead_count <= page_size:
+        state = "replay_candidate"
+    else:
+        raise RuntimeError("physical persistence is ahead by more than one page")
+    return {
+        "state": state,
+        "canonical_ahead_count": canonical_ahead_count,
+        "quarantine_ahead_count": quarantine_ahead_count,
+        "physical_ahead_count": physical_ahead_count,
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
