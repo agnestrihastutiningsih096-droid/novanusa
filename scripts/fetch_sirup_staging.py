@@ -500,6 +500,69 @@ def initialize_database(path: Path) -> None:
         connection.close()
 
 
+def inspect_canonical_page_state(database_path, rows):
+    canonical_fields = (
+        "id",
+        "id_referensi",
+        "pagu",
+        "satuanKerja",
+        "kldi",
+        "lokasi",
+        "jenisPengadaan",
+        "metode",
+        "sumberDana",
+        "paket",
+        "pemilihan",
+        "idBulan",
+    )
+    expected_rows = []
+    identifiers = []
+    seen_identifiers = set()
+    for row in rows:
+        if not isinstance(row, dict) or "id" not in row or row["id"] is None:
+            raise ValueError("each canonical inspection row must have a non-null id")
+        identifier = row["id"]
+        try:
+            is_duplicate = identifier in seen_identifiers
+        except TypeError as exc:
+            raise ValueError("canonical inspection row id must be hashable") from exc
+        if is_duplicate:
+            raise ValueError(f"duplicate canonical inspection id: {identifier!r}")
+        seen_identifiers.add(identifier)
+        identifiers.append(identifier)
+        expected_rows.append(tuple(row.get(field) for field in canonical_fields))
+
+    expected_count = len(expected_rows)
+    if expected_count == 0:
+        return {"state": "absent", "expected_count": 0, "observed_count": 0}
+
+    placeholders = ", ".join("?" for _ in identifiers)
+    connection = duckdb.connect(str(database_path), read_only=True)
+    try:
+        stored_rows = connection.execute(
+            f"select {', '.join(canonical_fields)} "
+            f"from sirup_raw where id in ({placeholders})",
+            identifiers,
+        ).fetchall()
+    finally:
+        connection.close()
+
+    observed_count = len(stored_rows)
+    if observed_count == 0:
+        state = "absent"
+    elif observed_count < expected_count:
+        state = "partial"
+    else:
+        expected_by_id = {row[0]: row for row in expected_rows}
+        stored_by_id = {row[0]: tuple(row) for row in stored_rows}
+        state = "complete" if stored_by_id == expected_by_id else "conflict"
+    return {
+        "state": state,
+        "expected_count": expected_count,
+        "observed_count": observed_count,
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",

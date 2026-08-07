@@ -15,6 +15,134 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class InspectCanonicalPageStateTests(unittest.TestCase):
+    fields = (
+        "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
+        "jenisPengadaan", "metode", "sumberDana", "paket", "pemilihan", "idBulan",
+    )
+
+    def make_row(self, identifier, suffix=""):
+        return {
+            field: identifier if field == "id" else f"{field}-{identifier}{suffix}"
+            for field in self.fields
+        }
+
+    def tuple_for(self, row):
+        return tuple(row.get(field) for field in self.fields)
+
+    def inspect_with_results(self, rows, stored_rows):
+        connection = mock.Mock()
+        connection.execute.return_value.fetchall.return_value = stored_rows
+        with mock.patch.object(
+            fetch_sirup_staging.duckdb, "connect", return_value=connection
+        ) as connect:
+            result = fetch_sirup_staging.inspect_canonical_page_state(
+                Path("canonical.duckdb"), rows
+            )
+        return result, connect, connection
+
+    def test_empty_rows_returns_absent_without_duckdb_query(self):
+        with mock.patch.object(fetch_sirup_staging.duckdb, "connect") as connect:
+            result = fetch_sirup_staging.inspect_canonical_page_state("unused", [])
+        self.assertEqual(
+            {"state": "absent", "expected_count": 0, "observed_count": 0}, result
+        )
+        connect.assert_not_called()
+
+    def test_no_matching_ids_is_absent_and_opens_read_only(self):
+        rows = [self.make_row(1), self.make_row(2)]
+        result, connect, connection = self.inspect_with_results(rows, [])
+        self.assertEqual(
+            {"state": "absent", "expected_count": 2, "observed_count": 0}, result
+        )
+        connect.assert_called_once_with("canonical.duckdb", read_only=True)
+        query, identifiers = connection.execute.call_args.args
+        self.assertEqual([1, 2], identifiers)
+        self.assertIn("from sirup_raw where id in (?, ?)", query)
+        connection.close.assert_called_once_with()
+
+    def test_all_rows_present_and_identical_is_complete(self):
+        rows = [self.make_row(1), self.make_row(2)]
+        result, _, _ = self.inspect_with_results(
+            rows, [self.tuple_for(row) for row in rows]
+        )
+        self.assertEqual(
+            {"state": "complete", "expected_count": 2, "observed_count": 2}, result
+        )
+
+    def test_some_rows_present_is_partial_even_if_present_row_conflicts(self):
+        rows = [self.make_row(1), self.make_row(2)]
+        result, _, _ = self.inspect_with_results(
+            rows, [self.tuple_for(self.make_row(1, "-different"))]
+        )
+        self.assertEqual(
+            {"state": "partial", "expected_count": 2, "observed_count": 1}, result
+        )
+
+    def test_all_ids_present_but_field_differs_is_conflict(self):
+        rows = [self.make_row(1), self.make_row(2)]
+        stored = [self.tuple_for(rows[0]), self.tuple_for(self.make_row(2, "-different"))]
+        result, _, _ = self.inspect_with_results(rows, stored)
+        self.assertEqual(
+            {"state": "conflict", "expected_count": 2, "observed_count": 2}, result
+        )
+
+    def test_database_return_order_does_not_affect_complete_state(self):
+        rows = [self.make_row(1), self.make_row(2)]
+        result, _, _ = self.inspect_with_results(
+            rows, [self.tuple_for(rows[1]), self.tuple_for(rows[0])]
+        )
+        self.assertEqual("complete", result["state"])
+
+    def test_duplicate_ids_are_rejected_before_database_open(self):
+        with mock.patch.object(fetch_sirup_staging.duckdb, "connect") as connect:
+            with self.assertRaisesRegex(ValueError, "duplicate canonical inspection id"):
+                fetch_sirup_staging.inspect_canonical_page_state(
+                    "unused", [self.make_row(1), self.make_row(1)]
+                )
+        connect.assert_not_called()
+
+    def test_missing_and_none_ids_are_rejected_before_database_open(self):
+        for row in ({"pagu": 1}, {"id": None}):
+            with self.subTest(row=row), mock.patch.object(
+                fetch_sirup_staging.duckdb, "connect"
+            ) as connect:
+                with self.assertRaises(ValueError):
+                    fetch_sirup_staging.inspect_canonical_page_state("unused", [row])
+                connect.assert_not_called()
+
+    def test_database_exception_propagates_unchanged_and_connection_closes(self):
+        error = RuntimeError("query failed")
+        connection = mock.Mock()
+        connection.execute.side_effect = error
+        with mock.patch.object(
+            fetch_sirup_staging.duckdb, "connect", return_value=connection
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.inspect_canonical_page_state(
+                    "canonical.duckdb", [self.make_row(1)]
+                )
+        self.assertIs(error, raised.exception)
+        connection.close.assert_called_once_with()
+
+    def test_helper_does_not_call_write_methods_or_append_page(self):
+        row = self.make_row(1)
+        connection = mock.Mock()
+        connection.execute.return_value.fetchall.return_value = [self.tuple_for(row)]
+        with (
+            mock.patch.object(
+                fetch_sirup_staging.duckdb, "connect", return_value=connection
+            ),
+            mock.patch.object(fetch_sirup_staging, "append_page") as append_page,
+        ):
+            fetch_sirup_staging.inspect_canonical_page_state("canonical.duckdb", [row])
+        append_page.assert_not_called()
+        connection.executemany.assert_not_called()
+        executed_query = connection.execute.call_args.args[0].lower()
+        for write_keyword in ("insert", "update", "delete", "create", "begin"):
+            self.assertNotIn(write_keyword, executed_query)
+
+
 class AppendPageQuarantineRecordsTests(unittest.TestCase):
     def call_helper(self, records, expected_prior_count):
         return fetch_sirup_staging.append_page_quarantine_records(
