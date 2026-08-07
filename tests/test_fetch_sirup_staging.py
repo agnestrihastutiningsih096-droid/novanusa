@@ -15,6 +15,234 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class DeriveNextPageAccountingTests(unittest.TestCase):
+    def persistence_result(
+        self,
+        valid=2,
+        invalid=0,
+        status="created",
+        quarantine_created=None,
+        quarantine_existing=0,
+        prior_quarantine=0,
+    ):
+        if quarantine_created is None:
+            quarantine_created = invalid - quarantine_existing
+        return {
+            "canonical_status": status,
+            "canonical_count": valid,
+            "quarantine_created_count": quarantine_created,
+            "quarantine_existing_count": quarantine_existing,
+            "quarantine_total_count": prior_quarantine + invalid,
+            "page_valid_row_count": valid,
+            "page_invalid_row_count": invalid,
+        }
+
+    def derive(self, persistence_result, source=0, canonical=0, quarantine=0):
+        return fetch_sirup_staging.derive_next_page_accounting(
+            source, canonical, quarantine, persistence_result
+        )
+
+    def test_all_valid_newly_created_page(self):
+        self.assertEqual(
+            {
+                "source_rows_processed": 3,
+                "canonical_rows_collected": 3,
+                "quarantine_rows": 0,
+            },
+            self.derive(self.persistence_result(valid=3)),
+        )
+
+    def test_mixed_newly_created_page_and_exact_returned_invariant(self):
+        result = self.derive(self.persistence_result(valid=3, invalid=2))
+        self.assertEqual(
+            {
+                "source_rows_processed": 5,
+                "canonical_rows_collected": 3,
+                "quarantine_rows": 2,
+            },
+            result,
+        )
+        self.assertEqual(
+            result["source_rows_processed"],
+            result["canonical_rows_collected"] + result["quarantine_rows"],
+        )
+
+    def test_prior_quarantine_with_all_page_records_newly_created(self):
+        result = self.derive(
+            self.persistence_result(
+                valid=1, invalid=2, quarantine_created=2, prior_quarantine=3
+            ),
+            source=5,
+            canonical=2,
+            quarantine=3,
+        )
+        self.assertEqual(
+            {
+                "source_rows_processed": 8,
+                "canonical_rows_collected": 3,
+                "quarantine_rows": 5,
+            },
+            result,
+        )
+
+    def test_canonical_existing_replay_has_same_logical_accounting_as_created(self):
+        created = self.derive(self.persistence_result(valid=2, invalid=1))
+        existing = self.derive(
+            self.persistence_result(valid=2, invalid=1, status="existing")
+        )
+        self.assertEqual(created, existing)
+
+    def test_existing_quarantine_replay_uses_logical_invalid_count(self):
+        result = self.derive(
+            self.persistence_result(
+                valid=1,
+                invalid=2,
+                quarantine_created=0,
+                quarantine_existing=2,
+                prior_quarantine=3,
+            ),
+            source=5,
+            canonical=2,
+            quarantine=3,
+        )
+        self.assertEqual(8, result["source_rows_processed"])
+        self.assertEqual(5, result["quarantine_rows"])
+
+    def test_prior_quarantine_with_mixed_created_and_existing_records(self):
+        result = self.derive(
+            self.persistence_result(
+                valid=2,
+                invalid=3,
+                quarantine_created=1,
+                quarantine_existing=2,
+                prior_quarantine=4,
+            ),
+            source=7,
+            canonical=3,
+            quarantine=4,
+        )
+        self.assertEqual(12, result["source_rows_processed"])
+        self.assertEqual(7, result["quarantine_rows"])
+
+    def test_zero_row_page(self):
+        self.assertEqual(
+            {
+                "source_rows_processed": 0,
+                "canonical_rows_collected": 0,
+                "quarantine_rows": 0,
+            },
+            self.derive(self.persistence_result(valid=0, invalid=0)),
+        )
+
+    def test_existing_cumulative_quarantine_accounting(self):
+        result = self.derive(
+            self.persistence_result(valid=2, invalid=1, prior_quarantine=3),
+            source=8,
+            canonical=5,
+            quarantine=3,
+        )
+        self.assertEqual(
+            {
+                "source_rows_processed": 11,
+                "canonical_rows_collected": 7,
+                "quarantine_rows": 4,
+            },
+            result,
+        )
+
+    def test_zero_invalid_page_preserves_existing_quarantine_total(self):
+        result = self.derive(
+            self.persistence_result(valid=2, invalid=0, prior_quarantine=3),
+            source=8,
+            canonical=5,
+            quarantine=3,
+        )
+        self.assertEqual(
+            {
+                "source_rows_processed": 10,
+                "canonical_rows_collected": 7,
+                "quarantine_rows": 3,
+            },
+            result,
+        )
+
+    def test_invalid_existing_invariant_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "existing page accounting invariant"):
+            self.derive(self.persistence_result(), source=4, canonical=3, quarantine=2)
+
+    def test_invalid_cumulative_counter_types_and_values_are_rejected(self):
+        cases = ((-1, 0, 0), (True, 0, 0), (0, False, 0), (0, 0, True))
+        for source, canonical, quarantine in cases:
+            with self.subTest(counters=(source, canonical, quarantine)):
+                with self.assertRaises(ValueError):
+                    self.derive(
+                        self.persistence_result(), source, canonical, quarantine
+                    )
+
+    def test_missing_persistence_field_is_rejected(self):
+        result = self.persistence_result()
+        del result["canonical_count"]
+        with self.assertRaisesRegex(ValueError, "missing canonical_count"):
+            self.derive(result)
+
+    def test_negative_and_bool_persistence_counts_are_rejected(self):
+        for invalid_value in (-1, True):
+            for field in (
+                "canonical_count",
+                "quarantine_created_count",
+                "quarantine_existing_count",
+                "quarantine_total_count",
+                "page_valid_row_count",
+                "page_invalid_row_count",
+            ):
+                with self.subTest(field=field, invalid_value=invalid_value):
+                    result = self.persistence_result()
+                    result[field] = invalid_value
+                    with self.assertRaises(ValueError):
+                        self.derive(result)
+
+    def test_unsupported_canonical_status_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unsupported canonical_status"):
+            self.derive(self.persistence_result(status="partial"))
+
+    def test_canonical_count_mismatch_is_rejected(self):
+        result = self.persistence_result(valid=2)
+        result["canonical_count"] = 1
+        with self.assertRaisesRegex(ValueError, "canonical_count"):
+            self.derive(result)
+
+    def test_quarantine_total_count_mismatch_is_rejected(self):
+        result = self.persistence_result(valid=1, invalid=2, prior_quarantine=3)
+        result["quarantine_total_count"] = 4
+        with self.assertRaisesRegex(ValueError, "quarantine_total_count"):
+            self.derive(result, source=5, canonical=2, quarantine=3)
+
+    def test_quarantine_created_existing_sum_mismatch_is_rejected(self):
+        result = self.persistence_result(valid=1, invalid=2)
+        result["quarantine_created_count"] = 0
+        with self.assertRaisesRegex(ValueError, "page_invalid_row_count"):
+            self.derive(result)
+
+    def test_helper_performs_no_io_or_persistence_operations(self):
+        with (
+            mock.patch.object(fetch_sirup_staging.duckdb, "connect") as connect,
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+            mock.patch.object(
+                fetch_sirup_staging, "append_canonical_page_replay_safe"
+            ) as canonical_append,
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_quarantine_records"
+            ) as quarantine_append,
+        ):
+            self.derive(self.persistence_result(valid=1, invalid=1))
+        connect.assert_not_called()
+        checkpoint.assert_not_called()
+        append.assert_not_called()
+        canonical_append.assert_not_called()
+        quarantine_append.assert_not_called()
+
+
 class PersistPreparedPageTransactionTests(unittest.TestCase):
     def make_prepared(self, valid_rows, invalid_rows):
         return {

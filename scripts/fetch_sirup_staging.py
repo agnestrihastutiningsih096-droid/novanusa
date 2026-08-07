@@ -610,6 +610,81 @@ def persist_prepared_page_transaction(
     }
 
 
+def derive_next_page_accounting(
+    source_rows_processed,
+    canonical_rows_collected,
+    quarantine_rows,
+    persistence_result,
+):
+    cumulative_counters = {
+        "source_rows_processed": source_rows_processed,
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+    }
+    for name, value in cumulative_counters.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    if source_rows_processed != canonical_rows_collected + quarantine_rows:
+        raise ValueError("existing page accounting invariant is invalid")
+    if not isinstance(persistence_result, dict):
+        raise ValueError("persistence_result must be a dict")
+
+    count_fields = (
+        "canonical_count",
+        "quarantine_created_count",
+        "quarantine_existing_count",
+        "quarantine_total_count",
+        "page_valid_row_count",
+        "page_invalid_row_count",
+    )
+    required_fields = ("canonical_status", *count_fields)
+    for field in required_fields:
+        if field not in persistence_result:
+            raise ValueError(f"persistence_result is missing {field}")
+    for field in count_fields:
+        value = persistence_result[field]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"persistence_result {field} must be a non-negative integer")
+
+    canonical_status = persistence_result["canonical_status"]
+    if canonical_status not in {"created", "existing"}:
+        raise ValueError(f"unsupported canonical_status: {canonical_status!r}")
+    page_valid_row_count = persistence_result["page_valid_row_count"]
+    page_invalid_row_count = persistence_result["page_invalid_row_count"]
+    if persistence_result["canonical_count"] != page_valid_row_count:
+        raise ValueError("canonical_count must equal page_valid_row_count")
+    if (
+        persistence_result["quarantine_created_count"]
+        + persistence_result["quarantine_existing_count"]
+        != page_invalid_row_count
+    ):
+        raise ValueError(
+            "quarantine created and existing counts must equal page_invalid_row_count"
+        )
+    expected_quarantine_total_count = quarantine_rows + page_invalid_row_count
+    if persistence_result["quarantine_total_count"] != expected_quarantine_total_count:
+        raise ValueError(
+            "quarantine_total_count must equal prior quarantine_rows plus "
+            "page_invalid_row_count"
+        )
+
+    next_accounting = {
+        "source_rows_processed": (
+            source_rows_processed + page_valid_row_count + page_invalid_row_count
+        ),
+        "canonical_rows_collected": (
+            canonical_rows_collected + page_valid_row_count
+        ),
+        "quarantine_rows": quarantine_rows + page_invalid_row_count,
+    }
+    if next_accounting["source_rows_processed"] != (
+        next_accounting["canonical_rows_collected"]
+        + next_accounting["quarantine_rows"]
+    ):
+        raise ValueError("derived page accounting invariant is invalid")
+    return next_accounting
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
