@@ -563,6 +563,23 @@ def inspect_canonical_page_state(database_path, rows):
     }
 
 
+def append_canonical_page_replay_safe(database_path, rows):
+    inspection = inspect_canonical_page_state(database_path, rows)
+    state = inspection["state"]
+    if state == "absent":
+        append_page(database_path, rows)
+        return {"status": "created", "canonical_count": len(rows)}
+    if state == "complete":
+        return {"status": "existing", "canonical_count": len(rows)}
+    if state in {"partial", "conflict"}:
+        raise RuntimeError(
+            f"canonical page state is {state}: "
+            f"expected_count={inspection['expected_count']}, "
+            f"observed_count={inspection['observed_count']}"
+        )
+    raise RuntimeError(f"unexpected canonical page inspection state: {state!r}")
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",

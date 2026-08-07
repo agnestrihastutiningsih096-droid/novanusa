@@ -15,6 +15,152 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class AppendCanonicalPageReplaySafeTests(unittest.TestCase):
+    def run_with_state(self, state, rows=None, expected_count=2, observed_count=0):
+        if rows is None:
+            rows = [{"id": 1}, {"id": 2}]
+        inspection_result = {
+            "state": state,
+            "expected_count": expected_count,
+            "observed_count": observed_count,
+        }
+        inspect = mock.Mock(return_value=inspection_result)
+        append = mock.Mock()
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "inspect_canonical_page_state", inspect
+            ),
+            mock.patch.object(fetch_sirup_staging, "append_page", append),
+        ):
+            result = fetch_sirup_staging.append_canonical_page_replay_safe(
+                Path("canonical.duckdb"), rows
+            )
+        return result, rows, inspect, append
+
+    def test_absent_appends_once_and_returns_created_with_unchanged_arguments(self):
+        database_path = Path("canonical.duckdb")
+        rows = [{"id": 1}, {"id": 2}]
+        inspection = {"state": "absent", "expected_count": 2, "observed_count": 0}
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value=inspection,
+            ) as inspect,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+        ):
+            result = fetch_sirup_staging.append_canonical_page_replay_safe(
+                database_path, rows
+            )
+
+        self.assertEqual({"status": "created", "canonical_count": 2}, result)
+        inspect.assert_called_once_with(database_path, rows)
+        append.assert_called_once_with(database_path, rows)
+        self.assertIs(database_path, inspect.call_args.args[0])
+        self.assertIs(rows, inspect.call_args.args[1])
+        self.assertIs(database_path, append.call_args.args[0])
+        self.assertIs(rows, append.call_args.args[1])
+
+    def test_complete_does_not_append_and_returns_existing(self):
+        result, _, inspect, append = self.run_with_state(
+            "complete", observed_count=2
+        )
+        self.assertEqual({"status": "existing", "canonical_count": 2}, result)
+        inspect.assert_called_once()
+        append.assert_not_called()
+
+    def test_partial_raises_with_counts_and_does_not_append(self):
+        inspection = {"state": "partial", "expected_count": 5, "observed_count": 2}
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value=inspection,
+            ) as inspect,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, r"partial.*expected_count=5.*observed_count=2"
+            ):
+                fetch_sirup_staging.append_canonical_page_replay_safe("db", [{"id": 1}])
+        inspect.assert_called_once_with("db", [{"id": 1}])
+        append.assert_not_called()
+
+    def test_conflict_raises_with_counts_and_does_not_append(self):
+        inspection = {"state": "conflict", "expected_count": 3, "observed_count": 3}
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value=inspection,
+            ),
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, r"conflict.*expected_count=3.*observed_count=3"
+            ):
+                fetch_sirup_staging.append_canonical_page_replay_safe("db", [{"id": 1}])
+        append.assert_not_called()
+
+    def test_unexpected_inspection_state_raises_without_append(self):
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value={"state": "unknown"},
+            ) as inspect,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected canonical page"):
+                fetch_sirup_staging.append_canonical_page_replay_safe("db", [])
+        inspect.assert_called_once_with("db", [])
+        append.assert_not_called()
+
+    def test_inspection_exception_propagates_unchanged(self):
+        error = OSError("inspection failed")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                side_effect=error,
+            ) as inspect,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+        ):
+            with self.assertRaises(OSError) as raised:
+                fetch_sirup_staging.append_canonical_page_replay_safe("db", [{"id": 1}])
+        self.assertIs(error, raised.exception)
+        inspect.assert_called_once()
+        append.assert_not_called()
+
+    def test_append_exception_propagates_unchanged(self):
+        error = RuntimeError("append failed")
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value={
+                    "state": "absent", "expected_count": 1, "observed_count": 0,
+                },
+            ) as inspect,
+            mock.patch.object(
+                fetch_sirup_staging, "append_page", side_effect=error
+            ) as append,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.append_canonical_page_replay_safe("db", [{"id": 1}])
+        self.assertIs(error, raised.exception)
+        inspect.assert_called_once()
+        append.assert_called_once()
+
+    def test_empty_rows_follow_absent_path_and_append_once(self):
+        result, rows, inspect, append = self.run_with_state(
+            "absent", rows=[], expected_count=0, observed_count=0
+        )
+        self.assertEqual({"status": "created", "canonical_count": 0}, result)
+        inspect.assert_called_once_with(Path("canonical.duckdb"), rows)
+        append.assert_called_once_with(Path("canonical.duckdb"), rows)
+
+
 class InspectCanonicalPageStateTests(unittest.TestCase):
     fields = (
         "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
