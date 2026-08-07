@@ -580,6 +580,36 @@ def append_canonical_page_replay_safe(database_path, rows):
     raise RuntimeError(f"unexpected canonical page inspection state: {state!r}")
 
 
+def persist_prepared_page_transaction(
+    database_path,
+    quarantine_path,
+    prepared_transaction,
+    expected_prior_quarantine_count,
+    run_id,
+    failure_evidence_path,
+):
+    classification = prepared_transaction["classification"]
+    valid_rows = classification["valid_rows"]
+    quarantine_records = build_page_quarantine_records(
+        prepared_transaction, run_id, failure_evidence_path
+    )
+    canonical_result = append_canonical_page_replay_safe(database_path, valid_rows)
+    quarantine_result = append_page_quarantine_records(
+        quarantine_path,
+        quarantine_records,
+        expected_prior_quarantine_count,
+    )
+    return {
+        "canonical_status": canonical_result["status"],
+        "canonical_count": canonical_result["canonical_count"],
+        "quarantine_created_count": quarantine_result["created_count"],
+        "quarantine_existing_count": quarantine_result["existing_count"],
+        "quarantine_total_count": quarantine_result["total_count"],
+        "page_valid_row_count": len(valid_rows),
+        "page_invalid_row_count": len(classification["invalid_rows"]),
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",

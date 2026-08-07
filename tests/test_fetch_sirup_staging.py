@@ -15,6 +15,214 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class PersistPreparedPageTransactionTests(unittest.TestCase):
+    def make_prepared(self, valid_rows, invalid_rows):
+        return {
+            "classification": {
+                "valid_rows": valid_rows,
+                "invalid_rows": invalid_rows,
+                "invalid_row_count": len(invalid_rows),
+            }
+        }
+
+    def persist_with_mocks(
+        self,
+        prepared,
+        canonical_result=None,
+        quarantine_records=None,
+        quarantine_result=None,
+        expected_prior_count=4,
+    ):
+        canonical_result = canonical_result or {
+            "status": "created",
+            "canonical_count": len(prepared["classification"]["valid_rows"]),
+        }
+        if quarantine_records is None:
+            quarantine_records = [
+                {"record": index}
+                for index, _ in enumerate(prepared["classification"]["invalid_rows"])
+            ]
+        quarantine_result = quarantine_result or {
+            "created_count": len(quarantine_records),
+            "existing_count": 0,
+            "total_count": expected_prior_count + len(quarantine_records),
+        }
+        order = mock.Mock()
+        build = mock.Mock(return_value=quarantine_records)
+        canonical = mock.Mock(return_value=canonical_result)
+        quarantine = mock.Mock(return_value=quarantine_result)
+        order.attach_mock(build, "build")
+        order.attach_mock(canonical, "canonical")
+        order.attach_mock(quarantine, "quarantine")
+        with (
+            mock.patch.object(fetch_sirup_staging, "build_page_quarantine_records", build),
+            mock.patch.object(
+                fetch_sirup_staging, "append_canonical_page_replay_safe", canonical
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_quarantine_records", quarantine
+            ),
+        ):
+            result = fetch_sirup_staging.persist_prepared_page_transaction(
+                Path("canonical.duckdb"),
+                Path("quarantine"),
+                prepared,
+                expected_prior_count,
+                "run-1",
+                Path("failure.json"),
+            )
+        return result, quarantine_records, order, build, canonical, quarantine
+
+    def test_canonical_created_and_quarantine_created_in_required_order(self):
+        valid_rows = [{"id": 1}, {"id": 2}]
+        invalid_rows = [{"row_index": 2}]
+        prepared = self.make_prepared(valid_rows, invalid_rows)
+        result, records, order, build, canonical, quarantine = self.persist_with_mocks(
+            prepared
+        )
+
+        self.assertEqual(
+            {
+                "canonical_status": "created",
+                "canonical_count": 2,
+                "quarantine_created_count": 1,
+                "quarantine_existing_count": 0,
+                "quarantine_total_count": 5,
+                "page_valid_row_count": 2,
+                "page_invalid_row_count": 1,
+            },
+            result,
+        )
+        build.assert_called_once_with(prepared, "run-1", Path("failure.json"))
+        canonical.assert_called_once_with(Path("canonical.duckdb"), valid_rows)
+        quarantine.assert_called_once_with(Path("quarantine"), records, 4)
+        self.assertIs(prepared, build.call_args.args[0])
+        self.assertIs(valid_rows, canonical.call_args.args[1])
+        self.assertIs(records, quarantine.call_args.args[1])
+        self.assertEqual(
+            ["build", "canonical", "quarantine"],
+            [call[0] for call in order.mock_calls],
+        )
+
+    def test_canonical_existing_and_quarantine_replayed(self):
+        prepared = self.make_prepared([{"id": 1}], [{"row_index": 1}, {"row_index": 2}])
+        result, _, _, _, _, _ = self.persist_with_mocks(
+            prepared,
+            canonical_result={"status": "existing", "canonical_count": 1},
+            quarantine_result={
+                "created_count": 0, "existing_count": 2, "total_count": 9,
+            },
+            expected_prior_count=7,
+        )
+        self.assertEqual("existing", result["canonical_status"])
+        self.assertEqual(0, result["quarantine_created_count"])
+        self.assertEqual(2, result["quarantine_existing_count"])
+        self.assertEqual(9, result["quarantine_total_count"])
+
+    def test_zero_invalid_rows_still_calls_quarantine_boundary(self):
+        valid_rows = [{"id": 1}]
+        prepared = self.make_prepared(valid_rows, [])
+        result, records, _, _, _, quarantine = self.persist_with_mocks(prepared)
+        self.assertEqual([], records)
+        quarantine.assert_called_once_with(Path("quarantine"), records, 4)
+        self.assertEqual(0, result["page_invalid_row_count"])
+
+    def test_zero_valid_rows_still_calls_canonical_boundary(self):
+        prepared = self.make_prepared([], [{"row_index": 0}])
+        result, _, _, _, canonical, _ = self.persist_with_mocks(prepared)
+        canonical.assert_called_once_with(Path("canonical.duckdb"), prepared["classification"]["valid_rows"])
+        self.assertEqual(0, result["page_valid_row_count"])
+
+    def test_completely_empty_classification_uses_both_boundaries(self):
+        prepared = self.make_prepared([], [])
+        result, records, _, _, canonical, quarantine = self.persist_with_mocks(prepared)
+        canonical.assert_called_once_with(Path("canonical.duckdb"), prepared["classification"]["valid_rows"])
+        quarantine.assert_called_once_with(Path("quarantine"), records, 4)
+        self.assertEqual(0, result["page_valid_row_count"])
+        self.assertEqual(0, result["page_invalid_row_count"])
+
+    def test_canonical_exception_prevents_quarantine_append(self):
+        error = RuntimeError("canonical failed")
+        prepared = self.make_prepared([{"id": 1}], [{"row_index": 1}])
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_page_quarantine_records",
+                return_value=[{"record": 1}],
+            ) as build,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_canonical_page_replay_safe",
+                side_effect=error,
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_quarantine_records"
+            ) as quarantine,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.persist_prepared_page_transaction(
+                    "db", "quarantine", prepared, 0, "run-1", "failure.json"
+                )
+        self.assertIs(error, raised.exception)
+        build.assert_called_once()
+        quarantine.assert_not_called()
+
+    def test_quarantine_exception_propagates_unchanged(self):
+        error = OSError("quarantine failed")
+        prepared = self.make_prepared([{"id": 1}], [{"row_index": 1}])
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_page_quarantine_records",
+                return_value=[{"record": 1}],
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_canonical_page_replay_safe",
+                return_value={"status": "created", "canonical_count": 1},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_page_quarantine_records",
+                side_effect=error,
+            ),
+        ):
+            with self.assertRaises(OSError) as raised:
+                fetch_sirup_staging.persist_prepared_page_transaction(
+                    "db", "quarantine", prepared, 0, "run-1", "failure.json"
+                )
+        self.assertIs(error, raised.exception)
+
+    def test_has_no_checkpoint_runtime_preparation_or_validation_side_effects(self):
+        prepared = self.make_prepared([{"id": 1}], [])
+        with (
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+            mock.patch.object(fetch_sirup_staging, "prepare_page_transaction") as prepare,
+            mock.patch.object(fetch_sirup_staging, "validate_page") as validate,
+            mock.patch.object(
+                fetch_sirup_staging, "build_page_quarantine_records", return_value=[]
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_canonical_page_replay_safe",
+                return_value={"status": "created", "canonical_count": 1},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_page_quarantine_records",
+                return_value={
+                    "created_count": 0, "existing_count": 0, "total_count": 0,
+                },
+            ),
+        ):
+            fetch_sirup_staging.persist_prepared_page_transaction(
+                "db", "quarantine", prepared, 0, "run-1", "failure.json"
+            )
+        checkpoint.assert_not_called()
+        prepare.assert_not_called()
+        validate.assert_not_called()
+
+
 class AppendCanonicalPageReplaySafeTests(unittest.TestCase):
     def run_with_state(self, state, rows=None, expected_count=2, observed_count=0):
         if rows is None:
