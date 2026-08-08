@@ -1139,7 +1139,7 @@ def main() -> int:
             if not database_path.is_file():
                 raise RuntimeError("checkpoint staging database does not exist")
             database_rows, distinct_ids, _, _ = verify_database(database_path)
-            if (
+            if args.mode == "strict" and (
                 database_rows != canonical_rows_collected
                 or distinct_ids != database_rows
             ):
@@ -1147,12 +1147,117 @@ def main() -> int:
             if not args.full_snapshot and canonical_rows_collected > args.max_rows:
                 raise RuntimeError("checkpoint contains more rows than --max-rows")
             if args.mode == "quarantine":
+                quarantine_path = run_dir / QUARANTINE_PATH_NAME
                 actual_quarantine_count = count_quarantine_records(
-                    run_dir / QUARANTINE_PATH_NAME
+                    quarantine_path
                 )
-                if actual_quarantine_count != quarantine_rows:
+                physical_state = classify_quarantine_resume_physical_state(
+                    canonical_rows_collected,
+                    quarantine_rows,
+                    database_rows,
+                    distinct_ids,
+                    actual_quarantine_count,
+                    args.page_size,
+                )
+                if physical_state["state"] == "replay_candidate":
+                    replay_expected_source_count: int | None = (
+                        source_count if source_rows_processed else None
+                    )
+                    replay_target_row_count = (
+                        replay_expected_source_count
+                        if args.full_snapshot
+                        else args.max_rows
+                    )
+                    if (
+                        replay_target_row_count is not None
+                        and source_rows_processed >= replay_target_row_count
+                    ):
+                        raise RuntimeError(
+                            "replay candidate starts beyond the target row count"
+                        )
+                    replay_length = (
+                        args.page_size
+                        if replay_target_row_count is None
+                        else min(
+                            args.page_size,
+                            replay_target_row_count - source_rows_processed,
+                        )
+                    )
+                    replay_draw = page_count + 1
+                    replay_payload, page_retries = fetch_page(
+                        session,
+                        args.year,
+                        start=source_rows_processed,
+                        length=replay_length,
+                        draw=replay_draw,
+                        timeout=args.timeout,
+                        retries=args.retries,
+                    )
+                    prepared_transaction = prepare_page_transaction(
+                        replay_payload,
+                        replay_expected_source_count,
+                        run_dir.name,
+                        args.year,
+                        source_rows_processed,
+                        replay_length,
+                        replay_draw,
+                        args.full_snapshot,
+                    )
+                    replay_expected_source_count = prepared_transaction[
+                        "verified_source_count"
+                    ]
+                    failure_evidence_path = (
+                        run_dir
+                        / "failures"
+                        / (
+                            f"page-start-{source_rows_processed}-"
+                            f"draw-{replay_draw}.json"
+                        )
+                    )
+                    replay_verification = verify_quarantine_replay_candidate(
+                        database_path,
+                        quarantine_path,
+                        prepared_transaction,
+                        canonical_rows_collected,
+                        quarantine_rows,
+                        run_dir.name,
+                        failure_evidence_path,
+                    )
+                    reconciliation_accounting = (
+                        derive_quarantine_replay_reconciliation(
+                            source_rows_processed,
+                            canonical_rows_collected,
+                            quarantine_rows,
+                            prepared_transaction,
+                            replay_verification,
+                        )
+                    )
+                    repaired_accounting = (
+                        write_quarantine_replay_reconciliation_checkpoint(
+                            checkpoint_path,
+                            config,
+                            run_dir,
+                            reconciliation_accounting,
+                            replay_expected_source_count,
+                            replay_draw,
+                            started_at,
+                            retries_used + page_retries,
+                        )
+                    )
+                    source_rows_processed = repaired_accounting[
+                        "source_rows_processed"
+                    ]
+                    canonical_rows_collected = repaired_accounting[
+                        "canonical_rows_collected"
+                    ]
+                    quarantine_rows = repaired_accounting["quarantine_rows"]
+                    source_count = replay_expected_source_count
+                    page_count += 1
+                    retries_used += page_retries
+                elif physical_state["state"] != "consistent":
                     raise RuntimeError(
-                        "checkpoint quarantine count does not match quarantine store"
+                        "unexpected quarantine resume physical state: "
+                        f"{physical_state['state']!r}"
                     )
         else:
             started_at = utc_now()

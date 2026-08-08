@@ -1,4 +1,5 @@
 import ast
+from contextlib import ExitStack
 import hashlib
 import io
 import inspect
@@ -2784,6 +2785,470 @@ class QuarantineRuntimeIntegrationTests(unittest.TestCase):
             count.assert_called_once_with(run_dir / fetch_sirup_staging.QUARANTINE_PATH_NAME)
             fetch.assert_not_called()
             self.assertIn("quarantine count", stderr.getvalue())
+
+
+class QuarantineResumeRecoveryWiringTests(unittest.TestCase):
+    def arguments(self, staging_root, checkpoint, max_rows):
+        return [
+            "fetch_sirup_staging.py",
+            "--year",
+            "2026",
+            "--mode",
+            "quarantine",
+            "--page-size",
+            "2",
+            "--max-rows",
+            str(max_rows),
+            "--staging-root",
+            str(staging_root),
+            "--checkpoint",
+            str(checkpoint),
+        ]
+
+    def run_recovery(
+        self,
+        valid,
+        invalid,
+        proof_error=None,
+        derivation_error=None,
+        repair_error=None,
+        base_canonical=1,
+        base_quarantine=1,
+        continue_rows=0,
+    ):
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        staging_root = Path(temporary_directory.name)
+        run_dir = staging_root.resolve() / "run"
+        run_dir.mkdir()
+        (run_dir / "sirup_staging.duckdb").touch()
+        checkpoint = staging_root / "checkpoint.json"
+        checkpoint.touch()
+        page_size = valid + invalid
+        base_source = base_canonical + base_quarantine
+        target_count = base_source + page_size + continue_rows
+        repaired = {
+            "source_rows_processed": base_source + page_size,
+            "canonical_rows_collected": base_canonical + valid,
+            "quarantine_rows": base_quarantine + invalid,
+        }
+        prepared = {
+            "verified_source_count": target_count,
+            "classification": {
+                "valid_rows": [{"id": index} for index in range(valid)],
+                "invalid_rows": [{"row_index": index} for index in range(invalid)],
+            },
+        }
+        normal_prepared = {
+            "verified_source_count": target_count,
+            "classification": {
+                "valid_rows": [{"id": "next-valid"}],
+                "invalid_rows": [{"row_index": "next-invalid"}],
+            },
+        }
+        verification = {
+            "verified": True,
+            "canonical_page_count": valid,
+            "quarantine_page_count": invalid,
+            "expected_canonical_total": repaired["canonical_rows_collected"],
+            "expected_quarantine_total": repaired["quarantine_rows"],
+        }
+        events = []
+        real_classifier = (
+            fetch_sirup_staging.classify_quarantine_resume_physical_state
+        )
+
+        def classify(*args):
+            events.append("classify")
+            return real_classifier(*args)
+
+        def fetch(*args, **kwargs):
+            events.append("fetch_page")
+            return {"recordsFiltered": target_count, "data": []}, 2
+
+        def prepare(*args):
+            events.append("prepare_page_transaction")
+            return prepared if events.count("prepare_page_transaction") == 1 else normal_prepared
+
+        def prove(*args):
+            events.append("verify_quarantine_replay_candidate")
+            if proof_error is not None:
+                raise proof_error
+            return verification
+
+        def derive(*args):
+            events.append("derive_quarantine_replay_reconciliation")
+            if derivation_error is not None:
+                raise derivation_error
+            return repaired
+
+        def repair(*args):
+            events.append("write_quarantine_replay_reconciliation_checkpoint")
+            if repair_error is not None:
+                raise repair_error
+            return repaired
+
+        def persist(*args):
+            events.append("persist_account_and_checkpoint_page")
+            return {
+                "persistence_result": {"persisted": True},
+                "next_accounting": {
+                    "source_rows_processed": target_count,
+                    "canonical_rows_collected": repaired[
+                        "canonical_rows_collected"
+                    ] + 1,
+                    "quarantine_rows": repaired["quarantine_rows"] + 1,
+                },
+            }
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    self.arguments(staging_root, checkpoint, target_count),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "load_checkpoint",
+                    return_value=(
+                        run_dir,
+                        base_source,
+                        base_canonical,
+                        base_quarantine,
+                        target_count,
+                        1,
+                        "started",
+                        5,
+                    ),
+                )
+            )
+            database_result = (
+                base_canonical + valid,
+                base_canonical + valid,
+                None if base_canonical + valid == 0 else 1,
+                None if base_canonical + valid == 0 else 10,
+            )
+            final_database_result = (
+                base_canonical + valid + (1 if continue_rows else 0),
+                base_canonical + valid + (1 if continue_rows else 0),
+                None
+                if base_canonical + valid + (1 if continue_rows else 0) == 0
+                else 1,
+                None
+                if base_canonical + valid + (1 if continue_rows else 0) == 0
+                else 10,
+            )
+            verify_database = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "verify_database",
+                    side_effect=[database_result, final_database_result],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "count_quarantine_records",
+                    return_value=base_quarantine + invalid,
+                )
+            )
+            classifier = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "classify_quarantine_resume_physical_state",
+                    side_effect=classify,
+                )
+            )
+            fetch_page = stack.enter_context(
+                mock.patch.object(fetch_sirup_staging, "fetch_page", side_effect=fetch)
+            )
+            prepare_page = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "prepare_page_transaction",
+                    side_effect=prepare,
+                )
+            )
+            replay_proof = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "verify_quarantine_replay_candidate",
+                    side_effect=prove,
+                )
+            )
+            reconciliation = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "derive_quarantine_replay_reconciliation",
+                    side_effect=derive,
+                )
+            )
+            checkpoint_repair = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "write_quarantine_replay_reconciliation_checkpoint",
+                    side_effect=repair,
+                )
+            )
+            persist = stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "persist_account_and_checkpoint_page",
+                    side_effect=persist,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(fetch_sirup_staging, "sha256_file", return_value="digest")
+            )
+            stderr = stack.enter_context(mock.patch("sys.stderr", io.StringIO()))
+            result = fetch_sirup_staging.main()
+        return {
+            "result": result,
+            "stderr": stderr.getvalue(),
+            "events": events,
+            "run_dir": run_dir,
+            "checkpoint": checkpoint,
+            "prepared": prepared,
+            "normal_prepared": normal_prepared,
+            "verification": verification,
+            "repaired": repaired,
+            "classifier": classifier,
+            "fetch": fetch_page,
+            "prepare": prepare_page,
+            "proof": replay_proof,
+            "derive": reconciliation,
+            "repair": checkpoint_repair,
+            "persist": persist,
+            "verify_database": verify_database,
+        }
+
+    def test_replay_candidate_exact_order_and_checkpoint_metadata(self):
+        outcome = self.run_recovery(1, 1)
+        self.assertEqual(0, outcome["result"])
+        self.assertEqual(
+            [
+                "classify",
+                "fetch_page",
+                "prepare_page_transaction",
+                "verify_quarantine_replay_candidate",
+                "derive_quarantine_replay_reconciliation",
+                "write_quarantine_replay_reconciliation_checkpoint",
+            ],
+            outcome["events"],
+        )
+        outcome["classifier"].assert_called_once_with(1, 1, 2, 2, 2, 2)
+        self.assertEqual(
+            {"start": 2, "length": 2, "draw": 2, "timeout": 30, "retries": 2},
+            outcome["fetch"].call_args.kwargs,
+        )
+        self.assertEqual(
+            (4, "run", 2026, 2, 2, 2, False),
+            outcome["prepare"].call_args.args[1:],
+        )
+        self.assertEqual(
+            outcome["run_dir"] / "failures" / "page-start-2-draw-2.json",
+            outcome["proof"].call_args.args[6],
+        )
+        repair_args = outcome["repair"].call_args.args
+        self.assertIs(outcome["repaired"], repair_args[3])
+        self.assertEqual((4, 2, "started", 7), repair_args[4:])
+
+    def test_recovered_page_is_not_double_persisted(self):
+        outcome = self.run_recovery(1, 1)
+        outcome["persist"].assert_not_called()
+        outcome["fetch"].assert_called_once()
+        self.assertEqual(2, outcome["repair"].call_args.args[5])
+        self.assertEqual(7, outcome["repair"].call_args.args[7])
+
+    def test_next_normal_fetch_starts_at_repaired_offset(self):
+        outcome = self.run_recovery(1, 1, continue_rows=2)
+        self.assertEqual(0, outcome["result"])
+        self.assertEqual(
+            [2, 4], [call.kwargs["start"] for call in outcome["fetch"].call_args_list]
+        )
+        outcome["persist"].assert_called_once()
+        self.assertIs(outcome["normal_prepared"], outcome["persist"].call_args.args[2])
+        self.assertIsNot(outcome["prepared"], outcome["persist"].call_args.args[2])
+        self.assertEqual((4, 2, 2), outcome["persist"].call_args.args[6:9])
+        self.assertEqual(3, outcome["persist"].call_args.args[13])
+        self.assertEqual(9, outcome["persist"].call_args.args[15])
+
+    def test_invalid_only_first_page_with_zero_canonical_database_recovers(self):
+        outcome = self.run_recovery(0, 2, base_canonical=0, base_quarantine=0)
+        self.assertEqual(0, outcome["result"])
+        outcome["classifier"].assert_called_once_with(0, 0, 0, 0, 2, 2)
+        self.assertEqual(0, outcome["repaired"]["canonical_rows_collected"])
+
+    def test_canonical_only_recovery_succeeds(self):
+        outcome = self.run_recovery(2, 0)
+        self.assertEqual(0, outcome["result"])
+        self.assertEqual((3, 1), tuple(outcome["repaired"].values())[1:])
+
+    def test_mixed_recovery_succeeds(self):
+        outcome = self.run_recovery(1, 1)
+        self.assertEqual(
+            {
+                "source_rows_processed": 4,
+                "canonical_rows_collected": 2,
+                "quarantine_rows": 2,
+            },
+            outcome["repaired"],
+        )
+
+    def test_proof_failure_prevents_derivation_and_checkpoint_repair(self):
+        outcome = self.run_recovery(1, 1, proof_error=RuntimeError("proof failed"))
+        self.assertEqual(1, outcome["result"])
+        outcome["derive"].assert_not_called()
+        outcome["repair"].assert_not_called()
+        outcome["persist"].assert_not_called()
+
+    def test_derivation_failure_prevents_checkpoint_repair(self):
+        outcome = self.run_recovery(
+            1, 1, derivation_error=ValueError("derivation failed")
+        )
+        self.assertEqual(1, outcome["result"])
+        outcome["repair"].assert_not_called()
+        outcome["persist"].assert_not_called()
+
+    def test_checkpoint_repair_failure_stops_before_accounting_continues(self):
+        error = PermissionError("repair failed")
+        outcome = self.run_recovery(1, 1, repair_error=error)
+        self.assertEqual(1, outcome["result"])
+        self.assertIn("repair failed", outcome["stderr"])
+        outcome["persist"].assert_not_called()
+        self.assertEqual(1, outcome["verify_database"].call_count)
+
+    def test_consistent_resume_performs_no_recovery_work(self):
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        staging_root = Path(temporary_directory.name)
+        run_dir = staging_root.resolve() / "run"
+        run_dir.mkdir()
+        (run_dir / "sirup_staging.duckdb").touch()
+        checkpoint = staging_root / "checkpoint.json"
+        checkpoint.touch()
+        recovery_names = (
+            "fetch_page",
+            "prepare_page_transaction",
+            "verify_quarantine_replay_candidate",
+            "derive_quarantine_replay_reconciliation",
+            "write_quarantine_replay_reconciliation_checkpoint",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(sys, "argv", self.arguments(staging_root, checkpoint, 2))
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging,
+                    "load_checkpoint",
+                    return_value=(run_dir, 2, 1, 1, 2, 1, "started", 0),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging, "verify_database", return_value=(1, 1, 1, 1)
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    fetch_sirup_staging, "count_quarantine_records", return_value=1
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(fetch_sirup_staging, "sha256_file", return_value="digest")
+            )
+            operations = [
+                stack.enter_context(mock.patch.object(fetch_sirup_staging, name))
+                for name in recovery_names
+            ]
+            self.assertEqual(0, fetch_sirup_staging.main())
+        for operation in operations:
+            operation.assert_not_called()
+
+    def test_unsafe_and_behind_physical_states_fail_before_fetch(self):
+        cases = (
+            ((4, 4, 1, 4), 1, "more than one page"),
+            ((0, 0, None, None), 1, "canonical count trails"),
+            ((1, 1, 1, 1), 0, "quarantine count trails"),
+        )
+        for database_result, quarantine_count, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                staging_root = Path(directory)
+                run_dir = staging_root.resolve() / "run"
+                run_dir.mkdir()
+                (run_dir / "sirup_staging.duckdb").touch()
+                checkpoint = staging_root / "checkpoint.json"
+                checkpoint.touch()
+                with (
+                    mock.patch.object(
+                        sys, "argv", self.arguments(staging_root, checkpoint, 4)
+                    ),
+                    mock.patch.object(
+                        fetch_sirup_staging,
+                        "load_checkpoint",
+                        return_value=(run_dir, 2, 1, 1, 4, 1, "started", 0),
+                    ),
+                    mock.patch.object(
+                        fetch_sirup_staging,
+                        "verify_database",
+                        return_value=database_result,
+                    ),
+                    mock.patch.object(
+                        fetch_sirup_staging,
+                        "count_quarantine_records",
+                        return_value=quarantine_count,
+                    ),
+                    mock.patch.object(fetch_sirup_staging, "fetch_page") as fetch,
+                    mock.patch("sys.stderr", io.StringIO()) as stderr,
+                ):
+                    self.assertEqual(1, fetch_sirup_staging.main())
+                fetch.assert_not_called()
+                self.assertIn(message, stderr.getvalue())
+
+    def test_strict_resume_never_uses_recovery_helpers(self):
+        source = inspect.getsource(fetch_sirup_staging.main)
+        tree = ast.parse(source)
+        recovery_calls = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in {
+                "classify_quarantine_resume_physical_state",
+                "verify_quarantine_replay_candidate",
+                "derive_quarantine_replay_reconciliation",
+                "write_quarantine_replay_reconciliation_checkpoint",
+            }
+        }
+        self.assertEqual(
+            {
+                "classify_quarantine_resume_physical_state",
+                "verify_quarantine_replay_candidate",
+                "derive_quarantine_replay_reconciliation",
+                "write_quarantine_replay_reconciliation_checkpoint",
+            },
+            recovery_calls,
+        )
+        quarantine_guard = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "args.mode == 'quarantine'"
+            and any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "classify_quarantine_resume_physical_state"
+                for child in ast.walk(node)
+            )
+        )
+        guarded_calls = {
+            child.func.id
+            for child in ast.walk(quarantine_guard)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+        self.assertTrue(recovery_calls.issubset(guarded_calls))
 
 
 class StrictRuntimeAccountingTests(unittest.TestCase):
