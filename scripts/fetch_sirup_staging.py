@@ -942,6 +942,62 @@ def derive_quarantine_replay_reconciliation(
     return next_accounting
 
 
+def write_quarantine_replay_reconciliation_checkpoint(
+    checkpoint_path,
+    config,
+    run_dir,
+    reconciliation_accounting,
+    source_count,
+    page_count,
+    started_at,
+    retries_used,
+):
+    if not isinstance(reconciliation_accounting, Mapping):
+        raise ValueError("reconciliation_accounting must be a mapping")
+    accounting_fields = {
+        "source_rows_processed",
+        "canonical_rows_collected",
+        "quarantine_rows",
+    }
+    if set(reconciliation_accounting) != accounting_fields:
+        raise ValueError(
+            "reconciliation_accounting must contain exactly the cumulative "
+            "accounting fields"
+        )
+    for field in accounting_fields:
+        value = reconciliation_accounting[field]
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"reconciliation_accounting {field} must be a non-negative integer"
+            )
+
+    source_rows_processed = reconciliation_accounting["source_rows_processed"]
+    canonical_rows_collected = reconciliation_accounting[
+        "canonical_rows_collected"
+    ]
+    quarantine_rows = reconciliation_accounting["quarantine_rows"]
+    if source_rows_processed != canonical_rows_collected + quarantine_rows:
+        raise ValueError("reconciliation accounting invariant is invalid")
+
+    write_checkpoint(
+        checkpoint_path,
+        config,
+        run_dir,
+        source_rows_processed,
+        canonical_rows_collected,
+        quarantine_rows,
+        source_count,
+        page_count,
+        started_at,
+        retries_used,
+    )
+    return {
+        "source_rows_processed": source_rows_processed,
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",

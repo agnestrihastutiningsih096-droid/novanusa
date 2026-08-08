@@ -492,6 +492,205 @@ class DeriveQuarantineReplayReconciliationTests(unittest.TestCase):
             operation.assert_not_called()
 
 
+class WriteQuarantineReplayReconciliationCheckpointTests(unittest.TestCase):
+    def accounting(self):
+        return {
+            "source_rows_processed": 11,
+            "canonical_rows_collected": 7,
+            "quarantine_rows": 4,
+        }
+
+    def arguments(self, accounting=None):
+        return (
+            Path("checkpoint.json"),
+            {"mode": "quarantine"},
+            Path("run-dir"),
+            self.accounting() if accounting is None else accounting,
+            100,
+            3,
+            "2026-08-08T00:00:00Z",
+            2,
+        )
+
+    def test_success_calls_write_checkpoint_exactly_once(self):
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint") as write:
+            fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                *self.arguments()
+            )
+        write.assert_called_once()
+
+    def test_exact_accounting_is_passed_to_checkpoint(self):
+        accounting = self.accounting()
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint") as write:
+            fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                *self.arguments(accounting)
+            )
+        self.assertEqual((11, 7, 4), write.call_args.args[3:6])
+
+    def test_checkpoint_metadata_is_passed_unchanged(self):
+        checkpoint_path = object()
+        config = object()
+        run_dir = object()
+        source_count = object()
+        page_count = object()
+        started_at = object()
+        retries_used = object()
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint") as write:
+            fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                checkpoint_path,
+                config,
+                run_dir,
+                self.accounting(),
+                source_count,
+                page_count,
+                started_at,
+                retries_used,
+            )
+        self.assertIs(checkpoint_path, write.call_args.args[0])
+        self.assertIs(config, write.call_args.args[1])
+        self.assertIs(run_dir, write.call_args.args[2])
+        self.assertEqual(
+            (source_count, page_count, started_at, retries_used),
+            write.call_args.args[6:],
+        )
+
+    def test_returns_exact_deterministic_accounting(self):
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint"):
+            result = fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                *self.arguments()
+            )
+        self.assertEqual(self.accounting(), result)
+        self.assertEqual(
+            {
+                "source_rows_processed",
+                "canonical_rows_collected",
+                "quarantine_rows",
+            },
+            set(result),
+        )
+
+    def test_invalid_invariant_rejects_before_checkpoint_write(self):
+        accounting = self.accounting()
+        accounting["source_rows_processed"] = 12
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint") as write:
+            with self.assertRaisesRegex(ValueError, "accounting invariant"):
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments(accounting)
+                )
+        write.assert_not_called()
+
+    def test_negative_accounting_count_is_rejected(self):
+        for field in self.accounting():
+            accounting = self.accounting()
+            accounting[field] = -1
+            with self.subTest(field=field), mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write, self.assertRaises(ValueError):
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments(accounting)
+                )
+            write.assert_not_called()
+
+    def test_bool_accounting_count_is_rejected(self):
+        for field in self.accounting():
+            accounting = self.accounting()
+            accounting[field] = True
+            with self.subTest(field=field), mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write, self.assertRaises(ValueError):
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments(accounting)
+                )
+            write.assert_not_called()
+
+    def test_missing_accounting_field_is_rejected(self):
+        for field in self.accounting():
+            accounting = self.accounting()
+            del accounting[field]
+            with self.subTest(field=field), mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write, self.assertRaises(ValueError):
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments(accounting)
+                )
+            write.assert_not_called()
+
+    def test_malformed_or_extra_accounting_is_rejected(self):
+        cases = (None, [], "accounting", {**self.accounting(), "extra": 1})
+        for accounting in cases:
+            arguments = list(self.arguments())
+            arguments[3] = accounting
+            with self.subTest(accounting=accounting), mock.patch.object(
+                fetch_sirup_staging, "write_checkpoint"
+            ) as write, self.assertRaises(ValueError):
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *arguments
+                )
+            write.assert_not_called()
+
+    def test_write_checkpoint_exception_propagates_unchanged(self):
+        error = PermissionError("checkpoint unavailable")
+        with mock.patch.object(
+            fetch_sirup_staging, "write_checkpoint", side_effect=error
+        ) as write:
+            with self.assertRaises(PermissionError) as raised:
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments()
+                )
+        self.assertIs(error, raised.exception)
+        write.assert_called_once()
+
+    def test_performs_no_canonical_or_quarantine_persistence(self):
+        operation_names = (
+            "append_page",
+            "append_canonical_page_replay_safe",
+            "append_page_quarantine_records",
+            "persist_prepared_page_transaction",
+            "persist_account_and_checkpoint_page",
+            "append_quarantine_record",
+            "read_quarantine_record",
+        )
+        patches = [
+            mock.patch.object(fetch_sirup_staging, name) for name in operation_names
+        ]
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint"):
+            mocks = [patch.start() for patch in patches]
+            try:
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments()
+                )
+            finally:
+                for patch in reversed(patches):
+                    patch.stop()
+        for operation in mocks:
+            operation.assert_not_called()
+
+    def test_performs_no_replay_proof_derivation_or_database_access(self):
+        operation_names = (
+            "verify_quarantine_replay_candidate",
+            "derive_quarantine_replay_reconciliation",
+            "count_quarantine_records",
+            "build_page_quarantine_records",
+        )
+        patches = [
+            mock.patch.object(fetch_sirup_staging, name) for name in operation_names
+        ]
+        with mock.patch.object(fetch_sirup_staging, "write_checkpoint"), mock.patch.object(
+            fetch_sirup_staging.duckdb, "connect"
+        ) as connect:
+            mocks = [patch.start() for patch in patches]
+            try:
+                fetch_sirup_staging.write_quarantine_replay_reconciliation_checkpoint(
+                    *self.arguments()
+                )
+            finally:
+                for patch in reversed(patches):
+                    patch.stop()
+        connect.assert_not_called()
+        for operation in mocks:
+            operation.assert_not_called()
+
+
 class ClassifyQuarantineResumePhysicalStateTests(unittest.TestCase):
     def classify(
         self,
