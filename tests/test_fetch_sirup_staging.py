@@ -327,6 +327,171 @@ class VerifyQuarantineReplayCandidateTests(unittest.TestCase):
             operation.assert_not_called()
 
 
+class DeriveQuarantineReplayReconciliationTests(unittest.TestCase):
+    def prepared(self, valid, invalid):
+        return {
+            "classification": {
+                "valid_rows": [{"id": index} for index in range(valid)],
+                "invalid_rows": [{"row_index": index} for index in range(invalid)],
+            }
+        }
+
+    def verification(self, valid, invalid, canonical=2, quarantine=3):
+        return {
+            "verified": True,
+            "canonical_page_count": valid,
+            "quarantine_page_count": invalid,
+            "expected_canonical_total": canonical + valid,
+            "expected_quarantine_total": quarantine + invalid,
+        }
+
+    def derive(self, valid, invalid, source=5, canonical=2, quarantine=3, **changes):
+        verification = self.verification(valid, invalid, canonical, quarantine)
+        verification.update(changes)
+        return fetch_sirup_staging.derive_quarantine_replay_reconciliation(
+            source,
+            canonical,
+            quarantine,
+            self.prepared(valid, invalid),
+            verification,
+        )
+
+    def test_canonical_only_replay_derives_next_accounting(self):
+        self.assertEqual(
+            {
+                "source_rows_processed": 7,
+                "canonical_rows_collected": 4,
+                "quarantine_rows": 3,
+            },
+            self.derive(2, 0),
+        )
+
+    def test_quarantine_only_replay_derives_next_accounting(self):
+        self.assertEqual(
+            {
+                "source_rows_processed": 7,
+                "canonical_rows_collected": 2,
+                "quarantine_rows": 5,
+            },
+            self.derive(0, 2),
+        )
+
+    def test_mixed_replay_derives_next_accounting(self):
+        self.assertEqual(
+            {
+                "source_rows_processed": 10,
+                "canonical_rows_collected": 4,
+                "quarantine_rows": 6,
+            },
+            self.derive(2, 3),
+        )
+
+    def test_stale_cumulative_invariant_mismatch_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "existing replay accounting invariant"):
+            self.derive(1, 1, source=6)
+
+    def test_verified_must_be_exactly_true(self):
+        for value in (False, 1, "true", None):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "verified must be exactly True"
+            ):
+                self.derive(1, 0, verified=value)
+
+    def test_canonical_page_count_mismatch_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "canonical_page_count"):
+            self.derive(2, 0, canonical_page_count=1)
+
+    def test_quarantine_page_count_mismatch_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "quarantine_page_count"):
+            self.derive(0, 2, quarantine_page_count=1)
+
+    def test_expected_canonical_total_mismatch_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "expected_canonical_total"):
+            self.derive(1, 0, expected_canonical_total=4)
+
+    def test_expected_quarantine_total_mismatch_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "expected_quarantine_total"):
+            self.derive(0, 1, expected_quarantine_total=5)
+
+    def test_empty_replay_page_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "at least one source row"):
+            self.derive(0, 0)
+
+    def test_invalid_cumulative_accounting_inputs_fail_closed(self):
+        cases = (
+            (True, 0, 0),
+            ("0", 0, 0),
+            (-1, 0, 0),
+            (0, False, 0),
+            (0, "0", 0),
+            (0, -1, 0),
+            (0, 0, True),
+            (0, 0, "0"),
+            (0, 0, -1),
+        )
+        verification = self.verification(1, 0, 0, 0)
+        for source, canonical, quarantine in cases:
+            with self.subTest(values=(source, canonical, quarantine)), self.assertRaises(
+                ValueError
+            ):
+                fetch_sirup_staging.derive_quarantine_replay_reconciliation(
+                    source,
+                    canonical,
+                    quarantine,
+                    self.prepared(1, 0),
+                    verification,
+                )
+
+    def test_invalid_verification_counts_fail_closed(self):
+        fields = (
+            "canonical_page_count",
+            "quarantine_page_count",
+            "expected_canonical_total",
+            "expected_quarantine_total",
+        )
+        for field in fields:
+            for value in (True, "1", -1):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    self.derive(1, 0, **{field: value})
+
+    def test_malformed_prepared_transaction_fails_closed(self):
+        verification = self.verification(1, 0)
+        cases = (None, {}, {"classification": {}}, {"classification": {"valid_rows": [], "invalid_rows": "bad"}})
+        for prepared in cases:
+            with self.subTest(prepared=prepared), self.assertRaises(ValueError):
+                fetch_sirup_staging.derive_quarantine_replay_reconciliation(
+                    5, 2, 3, prepared, verification
+                )
+
+    def test_helper_performs_no_persistence_or_inspection(self):
+        operation_names = (
+            "write_checkpoint",
+            "persist_account_and_checkpoint_page",
+            "append_page",
+            "append_canonical_page_replay_safe",
+            "append_page_quarantine_records",
+            "verify_quarantine_replay_candidate",
+            "classify_quarantine_resume_physical_state",
+            "inspect_canonical_page_state",
+            "count_quarantine_records",
+            "read_quarantine_record",
+            "build_page_quarantine_records",
+        )
+        patches = [
+            mock.patch.object(fetch_sirup_staging, name) for name in operation_names
+        ]
+        with mock.patch.object(fetch_sirup_staging.duckdb, "connect") as connect:
+            mocks = [patch.start() for patch in patches]
+            try:
+                self.derive(1, 1)
+            finally:
+                for patch in reversed(patches):
+                    patch.stop()
+        connect.assert_not_called()
+        for operation in mocks:
+            operation.assert_not_called()
+
+
 class ClassifyQuarantineResumePhysicalStateTests(unittest.TestCase):
     def classify(
         self,

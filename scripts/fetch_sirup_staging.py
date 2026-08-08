@@ -6,6 +6,7 @@ import json
 import sys
 import time
 import urllib.parse
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -861,6 +862,84 @@ def verify_quarantine_replay_candidate(
         "expected_canonical_total": expected_canonical_total,
         "expected_quarantine_total": expected_quarantine_total,
     }
+
+
+def derive_quarantine_replay_reconciliation(
+    source_rows_processed,
+    canonical_rows_collected,
+    quarantine_rows,
+    prepared_transaction,
+    replay_verification,
+):
+    cumulative_counters = {
+        "source_rows_processed": source_rows_processed,
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+    }
+    for name, value in cumulative_counters.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    if source_rows_processed != canonical_rows_collected + quarantine_rows:
+        raise ValueError("existing replay accounting invariant is invalid")
+
+    if not isinstance(prepared_transaction, Mapping):
+        raise ValueError("prepared_transaction must be a mapping")
+    classification = prepared_transaction.get("classification")
+    if not isinstance(classification, Mapping):
+        raise ValueError("prepared_transaction classification must be a mapping")
+    for field in ("valid_rows", "invalid_rows"):
+        if field not in classification or not isinstance(classification[field], list):
+            raise ValueError(f"prepared transaction {field} must be a list")
+    prepared_valid_count = len(classification["valid_rows"])
+    prepared_invalid_count = len(classification["invalid_rows"])
+
+    if not isinstance(replay_verification, Mapping):
+        raise ValueError("replay_verification must be a mapping")
+    if replay_verification.get("verified") is not True:
+        raise ValueError("replay_verification verified must be exactly True")
+    count_fields = (
+        "canonical_page_count",
+        "quarantine_page_count",
+        "expected_canonical_total",
+        "expected_quarantine_total",
+    )
+    for field in count_fields:
+        if field not in replay_verification:
+            raise ValueError(f"replay_verification is missing {field}")
+        value = replay_verification[field]
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"replay_verification {field} must be a non-negative integer"
+            )
+
+    canonical_page_count = replay_verification["canonical_page_count"]
+    quarantine_page_count = replay_verification["quarantine_page_count"]
+    expected_canonical_total = replay_verification["expected_canonical_total"]
+    expected_quarantine_total = replay_verification["expected_quarantine_total"]
+    if canonical_page_count != prepared_valid_count:
+        raise ValueError("canonical_page_count must equal prepared valid-row count")
+    if quarantine_page_count != prepared_invalid_count:
+        raise ValueError("quarantine_page_count must equal prepared invalid-row count")
+    if canonical_page_count + quarantine_page_count == 0:
+        raise ValueError("replay page must contain at least one source row")
+    if expected_canonical_total != canonical_rows_collected + canonical_page_count:
+        raise ValueError("expected_canonical_total does not match replay accounting")
+    if expected_quarantine_total != quarantine_rows + quarantine_page_count:
+        raise ValueError("expected_quarantine_total does not match replay accounting")
+
+    next_accounting = {
+        "source_rows_processed": (
+            source_rows_processed + canonical_page_count + quarantine_page_count
+        ),
+        "canonical_rows_collected": expected_canonical_total,
+        "quarantine_rows": expected_quarantine_total,
+    }
+    if next_accounting["source_rows_processed"] != (
+        next_accounting["canonical_rows_collected"]
+        + next_accounting["quarantine_rows"]
+    ):
+        raise ValueError("derived replay accounting invariant is invalid")
+    return next_accounting
 
 
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
