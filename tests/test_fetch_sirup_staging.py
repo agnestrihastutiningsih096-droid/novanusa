@@ -2289,7 +2289,147 @@ class ValidatePageClassifierIntegrationTests(unittest.TestCase):
         classify.assert_not_called()
 
 
+class SourceCountRecoveryTests(unittest.TestCase):
+    def config(self, full_snapshot=True):
+        return fetch_sirup_staging.checkpoint_config(
+            2026, 100, full_snapshot, "quarantine"
+        )
+
+    def write_checkpoint(self, root, source_count=300):
+        checkpoint = root / "checkpoint.json"
+        run_dir = root / "run"
+        fetch_sirup_staging.write_checkpoint(
+            checkpoint,
+            self.config(),
+            run_dir,
+            source_rows_processed=120,
+            canonical_rows_collected=117,
+            quarantine_rows=3,
+            source_count=source_count,
+            page_count=2,
+            started_at="2026-08-04T00:00:00+00:00",
+            retries_used=4,
+        )
+        return checkpoint
+
+    def recover(self, checkpoint, expected, observed, config=None):
+        with mock.patch.object(
+            fetch_sirup_staging,
+            "fetch_page",
+            return_value=({"recordsFiltered": observed, "data": []}, 1),
+        ) as fetch:
+            result = fetch_sirup_staging.recover_source_count_authority(
+                mock.Mock(), checkpoint, config or self.config(), checkpoint.parent,
+                expected, 2026, 30, 2,
+            )
+        fetch.assert_called_once()
+        return result
+
+    def test_normal_source_count_mismatch_remains_fail_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "expected 301, observed 302"):
+            fetch_sirup_staging.verify_source_count(301, 302)
+
+    def test_recovery_requires_existing_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "missing.json"
+            with mock.patch.object(fetch_sirup_staging, "fetch_page") as fetch:
+                with self.assertRaisesRegex(RuntimeError, "existing checkpoint"):
+                    fetch_sirup_staging.recover_source_count_authority(
+                        mock.Mock(), checkpoint, self.config(), checkpoint.parent,
+                        301, 2026, 30, 2,
+                    )
+            fetch.assert_not_called()
+
+    def test_recovery_requires_full_snapshot_mode(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            with mock.patch.object(fetch_sirup_staging, "fetch_page") as fetch:
+                with self.assertRaisesRegex(RuntimeError, "requires --full-snapshot"):
+                    fetch_sirup_staging.recover_source_count_authority(
+                        mock.Mock(), checkpoint, self.config(False), checkpoint.parent,
+                        301, 2026, 30, 2,
+                    )
+            fetch.assert_not_called()
+
+    def test_recovery_rejects_invalid_explicit_count(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            for invalid in (0, -1, True):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                    RuntimeError, "positive integer"
+                ):
+                    fetch_sirup_staging.recover_source_count_authority(
+                        mock.Mock(), checkpoint, self.config(), checkpoint.parent,
+                        invalid, 2026, 30, 2,
+                    )
+
+    def test_recovery_rejects_old_authority_without_probe(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            before = checkpoint.read_bytes()
+            with mock.patch.object(fetch_sirup_staging, "fetch_page") as fetch:
+                with self.assertRaisesRegex(RuntimeError, "equals existing"):
+                    fetch_sirup_staging.recover_source_count_authority(
+                        mock.Mock(), checkpoint, self.config(), checkpoint.parent,
+                        300, 2026, 30, 2,
+                    )
+            fetch.assert_not_called()
+            self.assertEqual(before, checkpoint.read_bytes())
+
+    def test_probe_mismatch_leaves_checkpoint_bytes_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            before = checkpoint.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "expected 301, observed 302"):
+                self.recover(checkpoint, 301, 302)
+            self.assertEqual(before, checkpoint.read_bytes())
+
+    def test_success_changes_only_source_count_and_mutates_no_data(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            before = json.loads(checkpoint.read_text(encoding="utf-8"))
+            with (
+                mock.patch.object(fetch_sirup_staging, "append_page") as append,
+                mock.patch.object(
+                    fetch_sirup_staging, "append_quarantine_record"
+                ) as quarantine_append,
+            ):
+                self.assertEqual(301, self.recover(checkpoint, 301, 301))
+            append.assert_not_called()
+            quarantine_append.assert_not_called()
+            after = json.loads(checkpoint.read_text(encoding="utf-8"))
+            self.assertEqual(301, after.pop("source_count"))
+            self.assertEqual(300, before.pop("source_count"))
+            self.assertEqual(before, after)
+
+    def test_normal_verification_rejects_another_change_after_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = self.write_checkpoint(Path(temporary_directory))
+            self.recover(checkpoint, 301, 301)
+            authority = fetch_sirup_staging.load_checkpoint(
+                checkpoint, self.config()
+            )[4]
+            with self.assertRaisesRegex(RuntimeError, "expected 301, observed 302"):
+                fetch_sirup_staging.verify_source_count(authority, 302)
+
+
 class CliModeBoundaryTests(unittest.TestCase):
+    def test_recover_source_count_cli_contract(self):
+        arguments = [
+            "fetch_sirup_staging.py", "--year", "2026", "--full-snapshot",
+            "--checkpoint", "checkpoint.json", "--recover-source-count", "301",
+        ]
+        with mock.patch.object(sys, "argv", arguments):
+            self.assertEqual(301, fetch_sirup_staging.parse_args().recover_source_count)
+
+    def test_recover_source_count_cli_rejects_non_positive_count(self):
+        arguments = [
+            "fetch_sirup_staging.py", "--year", "2026", "--full-snapshot",
+            "--checkpoint", "checkpoint.json", "--recover-source-count", "0",
+        ]
+        with mock.patch.object(sys, "argv", arguments), self.assertRaises(SystemExit):
+            fetch_sirup_staging.parse_args()
+
     def test_mode_defaults_to_strict(self):
         with mock.patch.object(sys, "argv", ["fetch_sirup_staging.py", "--year", "2026"]):
             self.assertEqual("strict", fetch_sirup_staging.parse_args().mode)

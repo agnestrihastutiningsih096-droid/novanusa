@@ -110,6 +110,7 @@ def write_checkpoint(
     page_count: int,
     started_at: str,
     retries_used: int,
+    preserved_paths: Mapping[str, str] | None = None,
 ) -> None:
     mode = config.get("mode")
     if mode == "strict":
@@ -138,12 +139,17 @@ def write_checkpoint(
             )
     else:
         raise RuntimeError(f"unsupported checkpoint mode: {mode!r}")
-    checkpoint = {
-        "checkpoint_version": CHECKPOINT_VERSION,
-        "config": config,
+    path_values = preserved_paths or {
         "run_dir": str(run_dir),
         "database_path": str(run_dir / "sirup_staging.duckdb"),
         "quarantine_path": str(run_dir / QUARANTINE_PATH_NAME),
+    }
+    checkpoint = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "config": config,
+        "run_dir": path_values["run_dir"],
+        "database_path": path_values["database_path"],
+        "quarantine_path": path_values["quarantine_path"],
         "source_count": source_count,
         "source_rows_processed": source_rows_processed,
         "canonical_rows_collected": canonical_rows_collected,
@@ -292,6 +298,77 @@ def verify_source_count(expected: int | None, observed: int) -> int:
             f"source record count changed: expected {expected}, observed {observed}"
         )
     return observed if expected is None else expected
+
+
+def recover_source_count_authority(
+    session: requests.Session,
+    checkpoint_path: Path,
+    config: dict[str, Any],
+    staging_root: Path,
+    expected_new_source_count: int,
+    year: int,
+    timeout: float,
+    retries: int,
+) -> int:
+    if type(expected_new_source_count) is not int or expected_new_source_count <= 0:
+        raise RuntimeError("recovery source count must be a positive integer")
+    if not checkpoint_path.is_file():
+        raise RuntimeError("source-count recovery requires an existing checkpoint")
+    if config.get("full_snapshot") is not True:
+        raise RuntimeError("source-count recovery requires --full-snapshot")
+
+    (
+        run_dir,
+        source_rows_processed,
+        canonical_rows_collected,
+        quarantine_rows,
+        old_source_count,
+        page_count,
+        started_at,
+        retries_used,
+    ) = load_checkpoint(checkpoint_path, config)
+    if run_dir.parent != staging_root.resolve():
+        raise RuntimeError("checkpoint run directory is outside --staging-root")
+    if expected_new_source_count == old_source_count:
+        raise RuntimeError("recovery source count equals existing checkpoint authority")
+    checkpoint_document = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    preserved_paths = {
+        name: checkpoint_document[name]
+        for name in ("run_dir", "database_path", "quarantine_path")
+    }
+
+    payload, _ = fetch_page(
+        session,
+        year,
+        start=0,
+        length=1,
+        draw=1,
+        timeout=timeout,
+        retries=retries,
+    )
+    observed_source_count = payload.get("recordsFiltered")
+    if type(observed_source_count) is not int or observed_source_count <= 0:
+        raise RuntimeError("observed source record count is not a positive integer")
+    if observed_source_count != expected_new_source_count:
+        raise RuntimeError(
+            "recovery source record count mismatch: "
+            f"expected {expected_new_source_count}, observed {observed_source_count}"
+        )
+
+    write_checkpoint(
+        checkpoint_path,
+        config,
+        run_dir,
+        source_rows_processed,
+        canonical_rows_collected,
+        quarantine_rows,
+        expected_new_source_count,
+        page_count,
+        started_at,
+        retries_used,
+        preserved_paths=preserved_paths,
+    )
+    return expected_new_source_count
 
 
 def write_validation_failure_evidence(
@@ -1120,6 +1197,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between pages (0-5 seconds).")
     parser.add_argument("--staging-root", type=Path, default=DEFAULT_STAGING_ROOT)
     parser.add_argument("--checkpoint", type=Path, help="Persist or resume a fetch checkpoint.")
+    parser.add_argument(
+        "--recover-source-count",
+        type=int,
+        help="Replace checkpoint source-count authority after an exact live-count probe.",
+    )
     args = parser.parse_args()
     if not 1 <= args.page_size <= MAX_PAGE_SIZE:
         parser.error(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
@@ -1132,6 +1214,13 @@ def parse_args() -> argparse.Namespace:
             parser.error("--stop-after-rows must be at least 1")
         if args.checkpoint is None:
             parser.error("--stop-after-rows requires --checkpoint")
+    if args.recover_source_count is not None:
+        if args.recover_source_count <= 0:
+            parser.error("--recover-source-count must be a positive integer")
+        if not args.full_snapshot:
+            parser.error("--recover-source-count requires --full-snapshot")
+        if args.checkpoint is None:
+            parser.error("--recover-source-count requires --checkpoint")
     if not 1 <= args.timeout <= 60:
         parser.error("--timeout must be between 1 and 60 seconds")
     if not 0 <= args.retries <= 3:
@@ -1156,6 +1245,21 @@ def main() -> int:
             args.year, args.page_size, args.full_snapshot, args.mode
         )
         checkpoint_path = args.checkpoint.resolve() if args.checkpoint else None
+        if args.recover_source_count is not None:
+            recover_source_count_authority(
+                session,
+                checkpoint_path,
+                config,
+                args.staging_root,
+                args.recover_source_count,
+                args.year,
+                args.timeout,
+                args.retries,
+            )
+            print(f"recovered source count authority: {args.recover_source_count}")
+            print(f"checkpoint: {checkpoint_path}")
+            session.close()
+            return 0
         if args.mode == "quarantine" and checkpoint_path is None:
             raise RuntimeError("quarantine mode requires --checkpoint")
         if checkpoint_path and checkpoint_path.is_file():
