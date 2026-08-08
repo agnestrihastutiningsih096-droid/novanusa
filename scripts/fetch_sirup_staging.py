@@ -503,6 +503,42 @@ def initialize_database(path: Path) -> None:
         connection.close()
 
 
+def canonical_storage_row_tuple(row):
+    """Return one row using the DuckDB canonical storage representation."""
+    varchar_fields = (
+        "id_referensi",
+        "satuanKerja",
+        "kldi",
+        "lokasi",
+        "jenisPengadaan",
+        "metode",
+        "sumberDana",
+        "paket",
+        "pemilihan",
+    )
+
+    def varchar_value(field):
+        value = row.get(field)
+        return None if value is None else str(value)
+
+    def integer_value(field):
+        value = row.get(field)
+        if value is None:
+            return None
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{field} is not an exact integer value")
+        return int(value)
+
+    pagu = row.get("pagu")
+    return (
+        integer_value("id"),
+        *(varchar_value(field) for field in varchar_fields[:1]),
+        None if pagu is None else float(pagu),
+        *(varchar_value(field) for field in varchar_fields[1:]),
+        integer_value("idBulan"),
+    )
+
+
 def inspect_canonical_page_state(database_path, rows):
     canonical_fields = (
         "id",
@@ -533,7 +569,7 @@ def inspect_canonical_page_state(database_path, rows):
             raise ValueError(f"duplicate canonical inspection id: {identifier!r}")
         seen_identifiers.add(identifier)
         identifiers.append(identifier)
-        expected_rows.append(tuple(row.get(field) for field in canonical_fields))
+        expected_rows.append(canonical_storage_row_tuple(row))
 
     expected_count = len(expected_rows)
     if expected_count == 0:

@@ -1582,12 +1582,18 @@ class InspectCanonicalPageStateTests(unittest.TestCase):
 
     def make_row(self, identifier, suffix=""):
         return {
-            field: identifier if field == "id" else f"{field}-{identifier}{suffix}"
+            field: (
+                identifier
+                if field in {"id", "idBulan"}
+                else float(identifier)
+                if field == "pagu"
+                else f"{field}-{identifier}{suffix}"
+            )
             for field in self.fields
         }
 
     def tuple_for(self, row):
-        return tuple(row.get(field) for field in self.fields)
+        return fetch_sirup_staging.canonical_storage_row_tuple(row)
 
     def inspect_with_results(self, rows, stored_rows):
         connection = mock.Mock()
@@ -1683,6 +1689,64 @@ class InspectCanonicalPageStateTests(unittest.TestCase):
                 )
         self.assertIs(error, raised.exception)
         connection.close.assert_called_once_with()
+
+    def test_integer_id_referensi_matches_persisted_varchar(self):
+        row = self.make_row(861)
+        row["id_referensi"] = 861
+        stored = [self.tuple_for({**row, "id_referensi": "861"})]
+        result, _, _ = self.inspect_with_results([row], stored)
+        self.assertEqual("complete", result["state"])
+
+    def test_real_duckdb_integer_id_referensi_storage_matches(self):
+        row = self.make_row(861)
+        row["id_referensi"] = 861
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "canonical.duckdb"
+            fetch_sirup_staging.initialize_database(database_path)
+            fetch_sirup_staging.append_page(database_path, [row])
+            result = fetch_sirup_staging.inspect_canonical_page_state(
+                database_path, [row]
+            )
+        self.assertEqual("complete", result["state"])
+
+    def test_string_id_referensi_matches_persisted_varchar(self):
+        row = self.make_row(861)
+        row["id_referensi"] = "861"
+        result, _, _ = self.inspect_with_results([row], [self.tuple_for(row)])
+        self.assertEqual("complete", result["state"])
+
+    def test_none_varchar_remains_none(self):
+        row = self.make_row(861)
+        row["id_referensi"] = None
+        stored = list(self.tuple_for(row))
+        self.assertIsNone(stored[1])
+        result, _, _ = self.inspect_with_results([row], [tuple(stored)])
+        self.assertEqual("complete", result["state"])
+
+    def test_id_referensi_content_difference_remains_conflict(self):
+        row = self.make_row(862)
+        row["id_referensi"] = 862
+        stored = {**row, "id_referensi": "861"}
+        result, _, _ = self.inspect_with_results([row], [self.tuple_for(stored)])
+        self.assertEqual("conflict", result["state"])
+
+    def test_varchar_normalization_preserves_whitespace_case_and_empty_string(self):
+        row = self.make_row(861)
+        row["id_referensi"] = "  Mixed Case  "
+        normalized = fetch_sirup_staging.canonical_storage_row_tuple(row)
+        self.assertEqual("  Mixed Case  ", normalized[1])
+        row["id_referensi"] = ""
+        self.assertEqual("", fetch_sirup_staging.canonical_storage_row_tuple(row)[1])
+
+    def test_numeric_storage_fields_are_normalized_without_rounding(self):
+        row = self.make_row(861)
+        row.update({"id": "861", "pagu": "12.5", "idBulan": "7"})
+        self.assertEqual(
+            (861, "id_referensi-861", 12.5, "satuanKerja-861", "kldi-861",
+             "lokasi-861", "jenisPengadaan-861", "metode-861", "sumberDana-861",
+             "paket-861", "pemilihan-861", 7),
+            fetch_sirup_staging.canonical_storage_row_tuple(row),
+        )
 
     def test_helper_does_not_call_write_methods_or_append_page(self):
         row = self.make_row(1)
