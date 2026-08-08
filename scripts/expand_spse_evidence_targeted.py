@@ -23,6 +23,7 @@ import duckdb
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
+from sirup_snapshot_resolver import resolve_active_sirup_database
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -725,11 +726,7 @@ def resolve_sirup_db(path: str | None) -> Path:
         if candidate.exists():
             return candidate
         raise FileNotFoundError(f'SiRUP DuckDB not found: {candidate}')
-    candidates = [ROOT.parent / 'mia-automation' / 'sirup_2026.duckdb', ROOT.parent / 'mia-automation' / 'sirup.duckdb']
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError('No SiRUP DuckDB found in known locations.')
+    return resolve_active_sirup_database()
 
 
 def parse_args() -> argparse.Namespace:
