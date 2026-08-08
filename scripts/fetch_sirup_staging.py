@@ -17,7 +17,9 @@ from sirup_page_classifier import classify_page_rows
 from sirup_quarantine_store import (
     append_quarantine_record,
     build_quarantine_record,
+    canonical_json_bytes,
     count_quarantine_records,
+    read_quarantine_record,
 )
 
 
@@ -781,6 +783,86 @@ def classify_quarantine_resume_physical_state(
     }
 
 
+def verify_quarantine_replay_candidate(
+    database_path,
+    quarantine_path,
+    prepared_transaction,
+    canonical_rows_collected,
+    quarantine_rows,
+    run_id,
+    failure_evidence_path,
+):
+    checkpoint_counts = {
+        "canonical_rows_collected": canonical_rows_collected,
+        "quarantine_rows": quarantine_rows,
+    }
+    for name, value in checkpoint_counts.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+
+    valid_rows = prepared_transaction["classification"]["valid_rows"]
+    expected_quarantine_records = build_page_quarantine_records(
+        prepared_transaction, run_id, failure_evidence_path
+    )
+    canonical_inspection = inspect_canonical_page_state(database_path, valid_rows)
+    expected_canonical_state = "complete" if valid_rows else "absent"
+    if canonical_inspection["state"] != expected_canonical_state:
+        raise RuntimeError(
+            "prepared canonical page is not exactly present for replay: "
+            f"observed {canonical_inspection['state']!r}"
+        )
+
+    canonical_page_count = len(valid_rows)
+    quarantine_page_count = len(expected_quarantine_records)
+    expected_canonical_total = canonical_rows_collected + canonical_page_count
+    expected_quarantine_total = quarantine_rows + quarantine_page_count
+    database_rows, distinct_ids, _, _ = verify_database(database_path)
+    prepared_page_count = canonical_page_count + quarantine_page_count
+    if prepared_page_count < 1:
+        raise RuntimeError("an empty prepared page cannot prove a replay candidate")
+    actual_quarantine_total = count_quarantine_records(quarantine_path)
+    physical_state = classify_quarantine_resume_physical_state(
+        canonical_rows_collected,
+        quarantine_rows,
+        database_rows,
+        distinct_ids,
+        actual_quarantine_total,
+        prepared_page_count,
+    )
+    if database_rows != expected_canonical_total:
+        raise RuntimeError(
+            "physical canonical total does not match expected replay total"
+        )
+    if actual_quarantine_total != expected_quarantine_total:
+        raise RuntimeError(
+            "physical quarantine total does not match expected replay total"
+        )
+    if (
+        physical_state["state"] != "replay_candidate"
+        or physical_state["canonical_ahead_count"] != canonical_page_count
+        or physical_state["quarantine_ahead_count"] != quarantine_page_count
+    ):
+        raise RuntimeError("physical state does not exactly match the prepared replay page")
+
+    quarantine_directory = Path(quarantine_path)
+    for expected_record in expected_quarantine_records:
+        record_path = quarantine_directory / (
+            f"{expected_record['quarantine_record_id']}.json"
+        )
+        persisted_record = read_quarantine_record(record_path)
+        if canonical_json_bytes(persisted_record) != canonical_json_bytes(
+            expected_record
+        ):
+            raise RuntimeError("persisted quarantine record does not match expected replay")
+    return {
+        "verified": True,
+        "canonical_page_count": canonical_page_count,
+        "quarantine_page_count": quarantine_page_count,
+        "expected_canonical_total": expected_canonical_total,
+        "expected_quarantine_total": expected_quarantine_total,
+    }
+
+
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
     values = [tuple(row.get(field) for field in (
             "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
@@ -806,7 +888,7 @@ def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
         connection.close()
 
 
-def verify_database(path: Path) -> tuple[int, int, int, int]:
+def verify_database(path: Path) -> tuple[int, int, int | None, int | None]:
     connection = duckdb.connect(str(path), read_only=True)
     try:
         row = connection.execute(
@@ -816,7 +898,27 @@ def verify_database(path: Path) -> tuple[int, int, int, int]:
         connection.close()
     if row is None:
         raise RuntimeError("database verification returned no result")
-    return int(row[0]), int(row[1]), int(row[2]), int(row[3])
+    try:
+        row_count = int(row[0])
+        distinct_id_count = int(row[1])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("database verification returned invalid counts") from exc
+    if row_count < 0 or distinct_id_count < 0:
+        raise RuntimeError("database verification returned negative counts")
+    if distinct_id_count > row_count:
+        raise RuntimeError("database verification returned too many distinct ids")
+
+    min_id, max_id = row[2], row[3]
+    if row_count == 0:
+        if distinct_id_count != 0 or min_id is not None or max_id is not None:
+            raise RuntimeError("database verification returned inconsistent empty aggregates")
+        return 0, 0, None, None
+    if min_id is None or max_id is None:
+        raise RuntimeError("database verification returned null bounds for non-empty table")
+    try:
+        return row_count, distinct_id_count, int(min_id), int(max_id)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("database verification returned invalid bounds") from exc
 
 
 def parse_args() -> argparse.Namespace:

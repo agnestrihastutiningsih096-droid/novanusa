@@ -15,6 +15,318 @@ import fetch_sirup_staging  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
+class VerifyDatabaseTests(unittest.TestCase):
+    def verify_aggregate(self, aggregate):
+        connection = mock.Mock()
+        connection.execute.return_value.fetchone.return_value = aggregate
+        with mock.patch.object(
+            fetch_sirup_staging.duckdb, "connect", return_value=connection
+        ):
+            result = fetch_sirup_staging.verify_database(Path("canonical.duckdb"))
+        connection.close.assert_called_once_with()
+        return result
+
+    def test_initialized_empty_database_returns_null_bounds(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "canonical.duckdb"
+            fetch_sirup_staging.initialize_database(database_path)
+            self.assertEqual(
+                (0, 0, None, None),
+                fetch_sirup_staging.verify_database(database_path),
+            )
+
+    def test_one_row_database_preserves_existing_semantics(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "canonical.duckdb"
+            fetch_sirup_staging.initialize_database(database_path)
+            fetch_sirup_staging.append_page(database_path, [{"id": 17}])
+            self.assertEqual(
+                (1, 1, 17, 17), fetch_sirup_staging.verify_database(database_path)
+            )
+
+    def test_multiple_row_database_preserves_counts_and_bounds(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "canonical.duckdb"
+            fetch_sirup_staging.initialize_database(database_path)
+            fetch_sirup_staging.append_page(
+                database_path, [{"id": 9}, {"id": 2}, {"id": 31}]
+            )
+            self.assertEqual(
+                (3, 3, 2, 31), fetch_sirup_staging.verify_database(database_path)
+            )
+
+    def test_query_exception_propagates_unchanged_and_connection_closes(self):
+        error = RuntimeError("query failed")
+        connection = mock.Mock()
+        connection.execute.side_effect = error
+        with mock.patch.object(
+            fetch_sirup_staging.duckdb, "connect", return_value=connection
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.verify_database(Path("canonical.duckdb"))
+        self.assertIs(error, raised.exception)
+        connection.close.assert_called_once_with()
+
+    def test_zero_rows_with_nonzero_distinct_count_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "distinct ids"):
+            self.verify_aggregate((0, 1, None, None))
+
+    def test_zero_rows_with_nonnull_bounds_fails_closed(self):
+        for bounds in ((1, None), (None, 1), (1, 1)):
+            with self.subTest(bounds=bounds), self.assertRaisesRegex(
+                RuntimeError, "inconsistent empty aggregates"
+            ):
+                self.verify_aggregate((0, 0, *bounds))
+
+    def test_positive_rows_with_null_bounds_fails_closed(self):
+        for bounds in ((None, 1), (1, None), (None, None)):
+            with self.subTest(bounds=bounds), self.assertRaisesRegex(
+                RuntimeError, "null bounds"
+            ):
+                self.verify_aggregate((1, 1, *bounds))
+
+    def test_distinct_count_greater_than_row_count_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "distinct ids"):
+            self.verify_aggregate((1, 2, 1, 1))
+
+    def test_negative_counts_fail_closed(self):
+        for aggregate in ((-1, 0, None, None), (0, -1, None, None)):
+            with self.subTest(aggregate=aggregate), self.assertRaisesRegex(
+                RuntimeError, "negative counts"
+            ):
+                self.verify_aggregate(aggregate)
+
+
+class VerifyQuarantineReplayCandidateTests(unittest.TestCase):
+    def prepared(self, valid_rows, invalid_rows):
+        return {
+            "classification": {
+                "valid_rows": valid_rows,
+                "invalid_rows": invalid_rows,
+            }
+        }
+
+    def verify_with_mocks(
+        self,
+        prepared,
+        expected_records,
+        canonical_rows_collected=5,
+        quarantine_rows=3,
+        canonical_state=None,
+        database_rows=None,
+        quarantine_total=None,
+        persisted_records=None,
+    ):
+        valid_rows = prepared["classification"]["valid_rows"]
+        if canonical_state is None:
+            canonical_state = "complete" if valid_rows else "absent"
+        if database_rows is None:
+            database_rows = canonical_rows_collected + len(valid_rows)
+        if quarantine_total is None:
+            quarantine_total = quarantine_rows + len(expected_records)
+        if persisted_records is None:
+            persisted_records = expected_records
+        with (
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_page_quarantine_records",
+                return_value=expected_records,
+            ) as build,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value={
+                    "state": canonical_state,
+                    "expected_count": len(valid_rows),
+                    "observed_count": len(valid_rows),
+                },
+            ) as inspect,
+            mock.patch.object(
+                fetch_sirup_staging,
+                "verify_database",
+                return_value=(database_rows, database_rows, 1, database_rows),
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "count_quarantine_records",
+                return_value=quarantine_total,
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "read_quarantine_record",
+                side_effect=persisted_records,
+            ) as read,
+        ):
+            result = fetch_sirup_staging.verify_quarantine_replay_candidate(
+                Path("canonical.duckdb"),
+                Path("quarantine"),
+                prepared,
+                canonical_rows_collected,
+                quarantine_rows,
+                "run-1",
+                Path("failure.json"),
+            )
+        return result, build, inspect, read
+
+    def test_valid_only_prepared_page_verifies(self):
+        prepared = self.prepared([{"id": 1}, {"id": 2}], [])
+        result, _, inspect, read = self.verify_with_mocks(prepared, [])
+        self.assertEqual(
+            {
+                "verified": True,
+                "canonical_page_count": 2,
+                "quarantine_page_count": 0,
+                "expected_canonical_total": 7,
+                "expected_quarantine_total": 3,
+            },
+            result,
+        )
+        inspect.assert_called_once_with(
+            Path("canonical.duckdb"), prepared["classification"]["valid_rows"]
+        )
+        read.assert_not_called()
+
+    def test_invalid_only_prepared_page_verifies(self):
+        prepared = self.prepared([], [{"row_index": 0}])
+        records = [{"quarantine_record_id": "record-1", "value": 1}]
+        result, _, _, read = self.verify_with_mocks(prepared, records)
+        self.assertEqual(0, result["canonical_page_count"])
+        self.assertEqual(1, result["quarantine_page_count"])
+        read.assert_called_once_with(Path("quarantine") / "record-1.json")
+
+    def test_mixed_page_verifies_without_mutating_prepared_transaction(self):
+        prepared = self.prepared([{"id": 1}], [{"row_index": 1}])
+        before = json.loads(json.dumps(prepared))
+        records = [{"quarantine_record_id": "record-1", "value": {"a": 1}}]
+        result, build, _, _ = self.verify_with_mocks(prepared, records)
+        self.assertTrue(result["verified"])
+        self.assertEqual(before, prepared)
+        build.assert_called_once_with(prepared, "run-1", Path("failure.json"))
+        self.assertIs(prepared, build.call_args.args[0])
+
+    def test_canonical_exact_replay_mismatch_fails_closed(self):
+        prepared = self.prepared([{"id": 1}], [])
+        with self.assertRaisesRegex(RuntimeError, "not exactly present"):
+            self.verify_with_mocks(prepared, [], canonical_state="conflict")
+
+    def test_missing_or_corrupt_quarantine_record_failure_propagates(self):
+        prepared = self.prepared([], [{"row_index": 0}])
+        records = [{"quarantine_record_id": "record-1"}]
+        for error in (ValueError("missing record"), ValueError("corrupt record")):
+            with self.subTest(error=str(error)), mock.patch.object(
+                fetch_sirup_staging,
+                "build_page_quarantine_records",
+                return_value=records,
+            ), mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value={"state": "absent"},
+            ), mock.patch.object(
+                fetch_sirup_staging, "verify_database", return_value=(5, 5, 1, 5)
+            ), mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=4
+            ), mock.patch.object(
+                fetch_sirup_staging, "read_quarantine_record", side_effect=error
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    fetch_sirup_staging.verify_quarantine_replay_candidate(
+                        "db", "quarantine", prepared, 5, 3, "run-1", "failure.json"
+                    )
+                self.assertIs(error, raised.exception)
+
+    def test_quarantine_content_mismatch_fails_closed(self):
+        prepared = self.prepared([], [{"row_index": 0}])
+        expected = [{"quarantine_record_id": "record-1", "value": 1}]
+        with self.assertRaisesRegex(RuntimeError, "does not match expected replay"):
+            self.verify_with_mocks(
+                prepared,
+                expected,
+                persisted_records=[{"quarantine_record_id": "record-1", "value": 2}],
+            )
+
+    def test_cumulative_physical_count_mismatches_fail_closed(self):
+        prepared = self.prepared([{"id": 1}], [{"row_index": 1}])
+        records = [{"quarantine_record_id": "record-1"}]
+        cases = (
+            {"database_rows": 5},
+            {"quarantine_total": 3},
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(
+                RuntimeError, "total does not match expected replay total"
+            ):
+                self.verify_with_mocks(prepared, records, **arguments)
+
+    def test_malformed_checkpoint_accounting_is_rejected_before_boundaries(self):
+        prepared = self.prepared([], [])
+        for canonical_count, quarantine_count in ((-1, 0), (0, -1), (True, 0), (0, False)):
+            with self.subTest(
+                canonical_count=canonical_count, quarantine_count=quarantine_count
+            ), mock.patch.object(
+                fetch_sirup_staging, "build_page_quarantine_records"
+            ) as build, mock.patch.object(
+                fetch_sirup_staging, "inspect_canonical_page_state"
+            ) as inspect:
+                with self.assertRaises(ValueError):
+                    fetch_sirup_staging.verify_quarantine_replay_candidate(
+                        "db",
+                        "quarantine",
+                        prepared,
+                        canonical_count,
+                        quarantine_count,
+                        "run-1",
+                        "failure.json",
+                    )
+                build.assert_not_called()
+                inspect.assert_not_called()
+
+    def test_canonical_inspection_failure_propagates_unchanged(self):
+        error = RuntimeError("inspection failed")
+        prepared = self.prepared([{"id": 1}], [])
+        with mock.patch.object(
+            fetch_sirup_staging, "build_page_quarantine_records", return_value=[]
+        ), mock.patch.object(
+            fetch_sirup_staging, "inspect_canonical_page_state", side_effect=error
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                fetch_sirup_staging.verify_quarantine_replay_candidate(
+                    "db", "quarantine", prepared, 0, 0, "run-1", "failure.json"
+                )
+        self.assertIs(error, raised.exception)
+
+    def test_proof_helper_calls_no_writers_or_persistence(self):
+        prepared = self.prepared([{"id": 1}], [])
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "build_page_quarantine_records", return_value=[]
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "inspect_canonical_page_state",
+                return_value={"state": "complete"},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "verify_database", return_value=(1, 1, 1, 1)
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "count_quarantine_records", return_value=0
+            ),
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+            mock.patch.object(fetch_sirup_staging, "append_page") as append,
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_quarantine_records"
+            ) as quarantine_append,
+            mock.patch.object(
+                fetch_sirup_staging, "persist_prepared_page_transaction"
+            ) as persist,
+        ):
+            fetch_sirup_staging.verify_quarantine_replay_candidate(
+                "db", "quarantine", prepared, 0, 0, "run-1", "failure.json"
+            )
+        for operation in (checkpoint, append, quarantine_append, persist):
+            operation.assert_not_called()
+
+
 class ClassifyQuarantineResumePhysicalStateTests(unittest.TestCase):
     def classify(
         self,
