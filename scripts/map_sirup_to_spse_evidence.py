@@ -23,13 +23,10 @@ from procurement_identity_resolution import (
     extract_procurement_status,
     resolve_identity,
 )
+from sirup_snapshot_resolver import resolve_active_sirup_database
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SIRUP_DB_CANDIDATES = [
-    ROOT.parent / 'mia-automation' / 'sirup_2026.duckdb',
-    ROOT.parent / 'mia-automation' / 'sirup.duckdb',
-]
 DEFAULT_EVIDENCE_CANDIDATES = [
     ROOT / 'data' / 'evidence' / 'spse' / 'nasional' / 'parsed' / 'spse_national_sample_2026.csv',
 ]
@@ -413,10 +410,7 @@ def build_summary(mapping: pd.DataFrame, sirup_count: int, evidence_count: int, 
 def resolve_sirup_db(path: str | None) -> Path:
     if path:
         return Path(path)
-    for candidate in DEFAULT_SIRUP_DB_CANDIDATES:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError('No SiRUP DuckDB found in known locations.')
+    return resolve_active_sirup_database()
 
 
 def resolve_evidence_files(paths: list[str] | None, year: int | None) -> list[Path]:
