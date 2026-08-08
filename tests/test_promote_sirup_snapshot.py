@@ -7,9 +7,13 @@ import tempfile
 import unittest
 from unittest import mock
 
+import duckdb
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import promote_sirup_snapshot as promotion  # noqa: E402
+import compare_sirup_staging as comparison  # noqa: E402
+import validate_sirup_promotion as validator  # noqa: E402
 
 
 def digest(data: bytes) -> str:
@@ -52,6 +56,135 @@ class SnapshotPromotionTests(unittest.TestCase):
 
     def selection(self):
         return json.loads((self.root / "selection.json").read_text(encoding="utf-8"))
+
+    def make_valid_run(self, name, identifier, baseline):
+        run = (self.base / "acceptance" / name).resolve()
+        run.mkdir(parents=True)
+        database = run / promotion.STAGING_DATABASE_NAME
+        connection = duckdb.connect(str(database))
+        try:
+            connection.execute(
+                """
+                create table sirup_raw (
+                    id bigint primary key,
+                    id_referensi varchar,
+                    pagu double,
+                    satuanKerja varchar,
+                    kldi varchar,
+                    lokasi varchar,
+                    jenisPengadaan varchar,
+                    metode varchar,
+                    sumberDana varchar,
+                    paket varchar,
+                    pemilihan varchar,
+                    idBulan integer
+                )
+                """
+            )
+            connection.execute(
+                "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [identifier, f"ref-{identifier}", 1.0, "satker", "kldi", "lokasi",
+                 "barang", "tender", "apbn", "paket", "pemilihan", 1],
+            )
+        finally:
+            connection.close()
+
+        database_hash = promotion.sha256_file(database)
+        manifest = {
+            "run_id": name,
+            "database_path": str(database),
+            "table_name": "sirup_raw",
+            "row_count": 1,
+            "distinct_id_count": 1,
+            "min_id": identifier,
+            "max_id": identifier,
+            "sha256": database_hash,
+            "source_records_filtered": 1,
+            "validation": {"synthetic_collection_complete": "passed"},
+            "promotion_eligible": False,
+        }
+        (run / promotion.MANIFEST_NAME).write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        report = {"status": "passed", **comparison.compare(baseline, database)}
+        (run / "comparison.json").write_text(json.dumps(report), encoding="utf-8")
+        return run
+
+    def make_valid_acceptance_fixture(self):
+        baseline = (self.base / "acceptance" / "baseline").resolve()
+        baseline.mkdir(parents=True)
+        baseline_database = baseline / promotion.STAGING_DATABASE_NAME
+        connection = duckdb.connect(str(baseline_database))
+        try:
+            connection.execute(
+                """
+                create table sirup_raw (
+                    id bigint primary key, id_referensi varchar, pagu double,
+                    satuanKerja varchar, kldi varchar, lokasi varchar,
+                    jenisPengadaan varchar, metode varchar, sumberDana varchar,
+                    paket varchar, pemilihan varchar, idBulan integer
+                )
+                """
+            )
+            connection.execute(
+                "insert into sirup_raw values (0, 'baseline', 1, '', '', '', '', '', '', '', '', 1)"
+            )
+        finally:
+            connection.close()
+        (baseline / promotion.MANIFEST_NAME).write_text(
+            json.dumps({"source_records_filtered": 1}), encoding="utf-8"
+        )
+        return baseline
+
+    def test_success_path_with_real_validator_installs_candidate_and_evidence(self):
+        baseline = self.make_valid_acceptance_fixture()
+        run = self.make_valid_run("candidate", 1, baseline)
+        candidate = run / promotion.STAGING_DATABASE_NAME
+        candidate_bytes = candidate.read_bytes()
+        candidate_hash = promotion.sha256_file(candidate)
+        legacy_before = self.legacy.read_bytes()
+
+        eligibility = validator.evaluate(run, run / "comparison.json")
+        self.assertEqual("PASS", eligibility["result"])
+        self.assertTrue(eligibility["promotion_eligible"])
+        self.assertEqual("PASS", eligibility["gates"]["promotion_flag_remains_false"])
+
+        result = promotion.promote(run, self.root, None)
+
+        installed = self.root / "snapshots" / candidate_hash
+        selection = self.selection()
+        self.assertEqual("promoted", result["status"])
+        self.assertEqual(candidate_hash, selection["active"]["snapshot_id"])
+        self.assertIsNone(selection["rollback"])
+        self.assertEqual(candidate_bytes, (installed / promotion.DATABASE_NAME).read_bytes())
+        self.assertEqual(candidate_hash, promotion.sha256_file(installed / promotion.DATABASE_NAME))
+        self.assertTrue((installed / promotion.MANIFEST_NAME).is_file())
+        self.assertEqual(
+            promotion.sha256_file(installed / promotion.MANIFEST_NAME),
+            selection["active"]["manifest_sha256"],
+        )
+        self.assertFalse(
+            json.loads((installed / promotion.MANIFEST_NAME).read_text(encoding="utf-8"))[
+                "promotion_eligible"
+            ]
+        )
+        self.assertEqual(legacy_before, self.legacy.read_bytes())
+
+    def test_real_validator_stale_expected_active_fails_without_authority_change(self):
+        baseline = self.make_valid_acceptance_fixture()
+        first = self.make_valid_run("candidate-one", 1, baseline)
+        first_id = promotion.promote(first, self.root, None)["snapshot_id"]
+        second = self.make_valid_run("candidate-two", 2, first)
+        self.assertEqual(
+            "PASS", validator.evaluate(second, second / "comparison.json")["result"]
+        )
+        selection_before = (self.root / "selection.json").read_bytes()
+
+        with self.assertRaisesRegex(promotion.PromotionError, "stale expected-active"):
+            promotion.promote(second, self.root, "0" * 64)
+
+        self.assertEqual(selection_before, (self.root / "selection.json").read_bytes())
+        self.assertEqual(first_id, self.selection()["active"]["snapshot_id"])
 
     def test_first_promotion_has_null_rollback_and_preserves_sources(self):
         run = self.make_run("run-one", b"candidate-one")
