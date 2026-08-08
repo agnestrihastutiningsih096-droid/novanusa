@@ -22,6 +22,10 @@ class SirupPageClassifierTests(unittest.TestCase):
             "records_filtered": 123,
             "source_row_count": 2,
             "valid_rows": rows,
+            "valid_row_entries": [
+                {"row_index": 0, "raw_row": rows[0]},
+                {"row_index": 1, "raw_row": rows[1]},
+            ],
             "invalid_rows": [],
             "valid_row_count": 2,
             "invalid_row_count": 0,
@@ -83,6 +87,11 @@ class SirupPageClassifierTests(unittest.TestCase):
         self.assertEqual(result["valid_rows"], [rows[0], rows[3]])
         self.assertEqual([item["row_index"] for item in result["invalid_rows"]],
                          [1, 2, 4])
+        self.assertEqual(
+            [item["row_index"] for item in result["valid_row_entries"]], [0, 3]
+        )
+        self.assertIs(result["valid_row_entries"][0]["raw_row"], rows[0])
+        self.assertIs(result["valid_row_entries"][1]["raw_row"], rows[3])
         self.assertEqual(result["source_row_count"],
                          result["valid_row_count"] + result["invalid_row_count"])
 

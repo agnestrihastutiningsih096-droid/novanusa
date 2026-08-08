@@ -1012,6 +1012,9 @@ class DeriveNextPageAccountingTests(unittest.TestCase):
             "quarantine_total_count": prior_quarantine + invalid,
             "page_valid_row_count": valid,
             "page_invalid_row_count": invalid,
+            "provenance_created_count": valid + invalid,
+            "provenance_existing_count": 0,
+            "provenance_page_count": valid + invalid,
         }
 
     def derive(self, persistence_result, source=0, canonical=0, quarantine=0):
@@ -1222,12 +1225,31 @@ class DeriveNextPageAccountingTests(unittest.TestCase):
 
 class PersistPreparedPageTransactionTests(unittest.TestCase):
     def make_prepared(self, valid_rows, invalid_rows):
+        invalid_indexes = {entry["row_index"] for entry in invalid_rows}
+        valid_indexes = (
+            index for index in range(len(valid_rows) + len(invalid_rows))
+            if index not in invalid_indexes
+        )
+        normalized_invalid_rows = [
+            {**entry, "raw_row": entry.get("raw_row", {"invalid": entry["row_index"]})}
+            for entry in invalid_rows
+        ]
         return {
             "classification": {
                 "valid_rows": valid_rows,
-                "invalid_rows": invalid_rows,
+                "valid_row_entries": [
+                    {"row_index": index, "raw_row": row}
+                    for index, row in zip(valid_indexes, valid_rows)
+                ],
+                "invalid_rows": normalized_invalid_rows,
                 "invalid_row_count": len(invalid_rows),
-            }
+            },
+            "page_identity": {
+                "run_id": "run-1", "page_start": 0,
+                "requested_length": len(valid_rows) + len(invalid_rows),
+                "page_draw": 1, "payload_sha256": "a" * 64,
+            },
+            "captured_at": "2026-08-09T00:00:00+00:00",
         }
 
     def persist_with_mocks(
@@ -1252,20 +1274,46 @@ class PersistPreparedPageTransactionTests(unittest.TestCase):
             "existing_count": 0,
             "total_count": expected_prior_count + len(quarantine_records),
         }
+        provenance_records = [
+            {"record": index}
+            for index in range(
+                len(prepared["classification"]["valid_rows"])
+                + len(prepared["classification"]["invalid_rows"])
+            )
+        ]
+        provenance_result = {
+            "provenance_created_count": len(provenance_records),
+            "provenance_existing_count": 0,
+            "provenance_page_count": len(provenance_records),
+        }
         order = mock.Mock()
         build = mock.Mock(return_value=quarantine_records)
+        build_provenance = mock.Mock(return_value=provenance_records)
         canonical = mock.Mock(return_value=canonical_result)
         quarantine = mock.Mock(return_value=quarantine_result)
+        provenance = mock.Mock(return_value=provenance_result)
         order.attach_mock(build, "build")
+        order.attach_mock(build_provenance, "build_provenance")
         order.attach_mock(canonical, "canonical")
         order.attach_mock(quarantine, "quarantine")
+        order.attach_mock(provenance, "provenance")
         with (
             mock.patch.object(fetch_sirup_staging, "build_page_quarantine_records", build),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "build_page_source_provenance_records",
+                build_provenance,
+            ),
             mock.patch.object(
                 fetch_sirup_staging, "append_canonical_page_replay_safe", canonical
             ),
             mock.patch.object(
                 fetch_sirup_staging, "append_page_quarantine_records", quarantine
+            ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_page_source_provenance_records",
+                provenance,
             ),
         ):
             result = fetch_sirup_staging.persist_prepared_page_transaction(
@@ -1293,6 +1341,9 @@ class PersistPreparedPageTransactionTests(unittest.TestCase):
                 "quarantine_created_count": 1,
                 "quarantine_existing_count": 0,
                 "quarantine_total_count": 5,
+                "provenance_created_count": 3,
+                "provenance_existing_count": 0,
+                "provenance_page_count": 3,
                 "page_valid_row_count": 2,
                 "page_invalid_row_count": 1,
             },
@@ -1305,7 +1356,7 @@ class PersistPreparedPageTransactionTests(unittest.TestCase):
         self.assertIs(valid_rows, canonical.call_args.args[1])
         self.assertIs(records, quarantine.call_args.args[1])
         self.assertEqual(
-            ["build", "canonical", "quarantine"],
+            ["build", "build_provenance", "canonical", "quarantine", "provenance"],
             [call[0] for call in order.mock_calls],
         )
 
@@ -1419,6 +1470,15 @@ class PersistPreparedPageTransactionTests(unittest.TestCase):
                     "created_count": 0, "existing_count": 0, "total_count": 0,
                 },
             ),
+            mock.patch.object(
+                fetch_sirup_staging,
+                "append_page_source_provenance_records",
+                return_value={
+                    "provenance_created_count": 1,
+                    "provenance_existing_count": 0,
+                    "provenance_page_count": 1,
+                },
+            ),
         ):
             fetch_sirup_staging.persist_prepared_page_transaction(
                 "db", "quarantine", prepared, 0, "run-1", "failure.json"
@@ -1426,6 +1486,107 @@ class PersistPreparedPageTransactionTests(unittest.TestCase):
         checkpoint.assert_not_called()
         prepare.assert_not_called()
         validate.assert_not_called()
+
+
+class SourceProvenancePageIntegrationTests(unittest.TestCase):
+    def valid_row(self, package_id):
+        return {field: package_id for field in fetch_sirup_staging.REQUIRED_FIELDS}
+
+    def prepared(self, rows, start=100):
+        with mock.patch.object(
+            fetch_sirup_staging, "utc_now", return_value="2026-08-09T00:00:00+00:00"
+        ):
+            return fetch_sirup_staging.prepare_page_transaction(
+                {"recordsFiltered": len(rows), "data": rows}, None, "run-1",
+                2026, start, len(rows), 2, False,
+            )
+
+    def test_mixed_page_builds_ordered_provenance_for_every_source_row(self):
+        prepared = self.prepared([self.valid_row(1), "invalid", self.valid_row(3)])
+        records = fetch_sirup_staging.build_page_source_provenance_records(prepared)
+        self.assertEqual([100, 101, 102], [record["source_offset"] for record in records])
+        self.assertEqual(
+            ["canonical", "quarantine", "canonical"],
+            [record["disposition"] for record in records],
+        )
+        self.assertEqual([1, None, 3], [record["package_id"] for record in records])
+
+    def test_all_canonical_and_all_quarantine_pages_are_complete(self):
+        cases = (
+            ([self.valid_row(1), self.valid_row(2)], ["canonical", "canonical"]),
+            (["bad", None], ["quarantine", "quarantine"]),
+        )
+        for rows, dispositions in cases:
+            with self.subTest(dispositions=dispositions):
+                records = fetch_sirup_staging.build_page_source_provenance_records(
+                    self.prepared(rows)
+                )
+                self.assertEqual(dispositions, [r["disposition"] for r in records])
+                self.assertEqual(len(rows), len(records))
+
+    def test_partial_provenance_persistence_converges_on_replay(self):
+        records = fetch_sirup_staging.build_page_source_provenance_records(
+            self.prepared([self.valid_row(1), "bad", self.valid_row(3)])
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "source-provenance"
+            fetch_sirup_staging.append_source_provenance_record(path, records[0])
+            result = fetch_sirup_staging.append_page_source_provenance_records(path, records)
+            self.assertEqual(
+                {"provenance_created_count": 2, "provenance_existing_count": 1,
+                 "provenance_page_count": 3},
+                result,
+            )
+            replay = fetch_sirup_staging.append_page_source_provenance_records(path, records)
+            self.assertEqual(0, replay["provenance_created_count"])
+            self.assertEqual(3, replay["provenance_existing_count"])
+
+    def test_unexpected_append_result_fails_page_completion(self):
+        with mock.patch.object(
+            fetch_sirup_staging, "append_source_provenance_record", return_value="partial"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected provenance"):
+                fetch_sirup_staging.append_page_source_provenance_records(
+                    "unused", [{"record": 1}]
+                )
+
+    def test_provenance_failure_prevents_accounting_and_checkpoint(self):
+        prepared = self.prepared([self.valid_row(1)])
+        with (
+            mock.patch.object(
+                fetch_sirup_staging, "append_canonical_page_replay_safe",
+                return_value={"status": "created", "canonical_count": 1},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_quarantine_records",
+                return_value={"created_count": 0, "existing_count": 0, "total_count": 0},
+            ),
+            mock.patch.object(
+                fetch_sirup_staging, "append_page_source_provenance_records",
+                side_effect=RuntimeError("provenance conflict"),
+            ),
+            mock.patch.object(fetch_sirup_staging, "derive_next_page_accounting") as accounting,
+            mock.patch.object(fetch_sirup_staging, "write_checkpoint") as checkpoint,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "provenance conflict"):
+                fetch_sirup_staging.persist_account_and_checkpoint_page(
+                    "db", "quarantine", prepared, 0, "run-1", "failure.json",
+                    0, 0, 0, "checkpoint", {"mode": "quarantine"}, Path("run"),
+                    1, 1, "started", 0,
+                )
+        accounting.assert_not_called()
+        checkpoint.assert_not_called()
+
+    def test_accounting_rejects_incomplete_provenance_page(self):
+        result = {
+            "canonical_status": "created", "canonical_count": 1,
+            "quarantine_created_count": 0, "quarantine_existing_count": 0,
+            "quarantine_total_count": 0, "page_valid_row_count": 1,
+            "page_invalid_row_count": 0, "provenance_created_count": 0,
+            "provenance_existing_count": 0, "provenance_page_count": 0,
+        }
+        with self.assertRaisesRegex(ValueError, "provenance_page_count"):
+            fetch_sirup_staging.derive_next_page_accounting(0, 0, 0, result)
 
 
 class AppendCanonicalPageReplaySafeTests(unittest.TestCase):

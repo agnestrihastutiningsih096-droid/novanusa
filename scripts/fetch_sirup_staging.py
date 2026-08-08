@@ -22,6 +22,10 @@ from sirup_quarantine_store import (
     count_quarantine_records,
     read_quarantine_record,
 )
+from sirup_source_provenance import (
+    append_source_provenance_record,
+    build_source_provenance_record,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +39,7 @@ CHECKPOINT_VERSION = 3
 CHECKPOINT_REPLACE_ATTEMPTS = 10
 CHECKPOINT_REPLACE_DELAY_SECONDS = 0.5
 QUARANTINE_PATH_NAME = "quarantine"
+SOURCE_PROVENANCE_PATH_NAME = "source-provenance"
 REQUIRED_FIELDS = {
     "id",
     "id_referensi",
@@ -525,6 +530,56 @@ def append_page_quarantine_records(
     }
 
 
+def build_page_source_provenance_records(prepared_transaction):
+    classification = prepared_transaction["classification"]
+    entries = [
+        (entry["row_index"], "canonical", entry["raw_row"])
+        for entry in classification["valid_row_entries"]
+    ] + [
+        (entry["row_index"], "quarantine", entry["raw_row"])
+        for entry in classification["invalid_rows"]
+    ]
+    entries.sort(key=lambda entry: entry[0])
+    if [entry[0] for entry in entries] != list(range(len(entries))):
+        raise RuntimeError("prepared page does not preserve every source row position")
+    records = [
+        build_source_provenance_record(
+            prepared_transaction["page_identity"],
+            row_index,
+            disposition,
+            raw_row,
+            prepared_transaction["captured_at"],
+        )
+        for row_index, disposition, raw_row in entries
+    ]
+    if len(records) != (
+        len(classification["valid_rows"]) + len(classification["invalid_rows"])
+    ):
+        raise RuntimeError("provenance page count does not match classified source rows")
+    return records
+
+
+def append_page_source_provenance_records(provenance_path, provenance_records):
+    created_count = 0
+    existing_count = 0
+    for record in provenance_records:
+        result = append_source_provenance_record(provenance_path, record)
+        if result == "created":
+            created_count += 1
+        elif result == "existing":
+            existing_count += 1
+        else:
+            raise RuntimeError(f"unexpected provenance append result: {result!r}")
+    page_count = len(provenance_records)
+    if created_count + existing_count != page_count:
+        raise RuntimeError("provenance page persistence is incomplete")
+    return {
+        "provenance_created_count": created_count,
+        "provenance_existing_count": existing_count,
+        "provenance_page_count": page_count,
+    }
+
+
 def validate_page(
     run_dir: Path,
     payload: dict[str, Any],
@@ -704,16 +759,23 @@ def persist_prepared_page_transaction(
     run_id,
     failure_evidence_path,
 ):
+    if prepared_transaction["page_identity"]["run_id"] != run_id:
+        raise RuntimeError("prepared page run_id does not match persistence run_id")
     classification = prepared_transaction["classification"]
     valid_rows = classification["valid_rows"]
     quarantine_records = build_page_quarantine_records(
         prepared_transaction, run_id, failure_evidence_path
     )
+    provenance_records = build_page_source_provenance_records(prepared_transaction)
     canonical_result = append_canonical_page_replay_safe(database_path, valid_rows)
     quarantine_result = append_page_quarantine_records(
         quarantine_path,
         quarantine_records,
         expected_prior_quarantine_count,
+    )
+    provenance_result = append_page_source_provenance_records(
+        Path(quarantine_path).parent / SOURCE_PROVENANCE_PATH_NAME,
+        provenance_records,
     )
     return {
         "canonical_status": canonical_result["status"],
@@ -721,6 +783,7 @@ def persist_prepared_page_transaction(
         "quarantine_created_count": quarantine_result["created_count"],
         "quarantine_existing_count": quarantine_result["existing_count"],
         "quarantine_total_count": quarantine_result["total_count"],
+        **provenance_result,
         "page_valid_row_count": len(valid_rows),
         "page_invalid_row_count": len(classification["invalid_rows"]),
     }
@@ -752,6 +815,9 @@ def derive_next_page_accounting(
         "quarantine_total_count",
         "page_valid_row_count",
         "page_invalid_row_count",
+        "provenance_created_count",
+        "provenance_existing_count",
+        "provenance_page_count",
     )
     required_fields = ("canonical_status", *count_fields)
     for field in required_fields:
@@ -782,6 +848,18 @@ def derive_next_page_accounting(
         raise ValueError(
             "quarantine_total_count must equal prior quarantine_rows plus "
             "page_invalid_row_count"
+        )
+    if (
+        persistence_result["provenance_created_count"]
+        + persistence_result["provenance_existing_count"]
+        != persistence_result["provenance_page_count"]
+    ):
+        raise ValueError("provenance created and existing counts must equal page count")
+    if persistence_result["provenance_page_count"] != (
+        page_valid_row_count + page_invalid_row_count
+    ):
+        raise ValueError(
+            "provenance_page_count must equal valid plus invalid page row counts"
         )
 
     next_accounting = {
@@ -1354,36 +1432,60 @@ def main() -> int:
                             f"draw-{replay_draw}.json"
                         )
                     )
-                    replay_verification = verify_quarantine_replay_candidate(
-                        database_path,
-                        quarantine_path,
-                        prepared_transaction,
-                        canonical_rows_collected,
-                        quarantine_rows,
-                        run_dir.name,
-                        failure_evidence_path,
-                    )
-                    reconciliation_accounting = (
-                        derive_quarantine_replay_reconciliation(
+                    provenance_enabled = (
+                        run_dir / SOURCE_PROVENANCE_PATH_NAME
+                    ).is_dir()
+                    if provenance_enabled:
+                        page_result = persist_account_and_checkpoint_page(
+                            database_path,
+                            quarantine_path,
+                            prepared_transaction,
+                            quarantine_rows,
+                            run_dir.name,
+                            failure_evidence_path,
                             source_rows_processed,
                             canonical_rows_collected,
                             quarantine_rows,
-                            prepared_transaction,
-                            replay_verification,
-                        )
-                    )
-                    repaired_accounting = (
-                        write_quarantine_replay_reconciliation_checkpoint(
                             checkpoint_path,
                             config,
                             run_dir,
-                            reconciliation_accounting,
                             replay_expected_source_count,
                             replay_draw,
                             started_at,
                             retries_used + page_retries,
                         )
-                    )
+                        repaired_accounting = page_result["next_accounting"]
+                    else:
+                        replay_verification = verify_quarantine_replay_candidate(
+                            database_path,
+                            quarantine_path,
+                            prepared_transaction,
+                            canonical_rows_collected,
+                            quarantine_rows,
+                            run_dir.name,
+                            failure_evidence_path,
+                        )
+                        reconciliation_accounting = (
+                            derive_quarantine_replay_reconciliation(
+                                source_rows_processed,
+                                canonical_rows_collected,
+                                quarantine_rows,
+                                prepared_transaction,
+                                replay_verification,
+                            )
+                        )
+                        repaired_accounting = (
+                            write_quarantine_replay_reconciliation_checkpoint(
+                                checkpoint_path,
+                                config,
+                                run_dir,
+                                reconciliation_accounting,
+                                replay_expected_source_count,
+                                replay_draw,
+                                started_at,
+                                retries_used + page_retries,
+                            )
+                        )
                     source_rows_processed = repaired_accounting[
                         "source_rows_processed"
                     ]
@@ -1412,6 +1514,8 @@ def main() -> int:
                 raise RuntimeError(f"staging run already exists: {run_dir}")
             run_dir.mkdir(parents=True)
             initialize_database(database_path)
+            if args.mode == "quarantine":
+                (run_dir / SOURCE_PROVENANCE_PATH_NAME).mkdir()
             source_rows_processed = 0
             canonical_rows_collected = 0
             quarantine_rows = 0

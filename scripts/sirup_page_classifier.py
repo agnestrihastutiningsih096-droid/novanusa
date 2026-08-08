@@ -59,6 +59,7 @@ def classify_page_rows(
                 duplicate_indexes.add(other_index)
 
     valid_rows: list[Any] = []
+    valid_row_entries: list[dict[str, Any]] = []
     invalid_rows: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -95,12 +96,14 @@ def classify_page_rows(
             })
         else:
             valid_rows.append(row)
+            valid_row_entries.append({"row_index": index, "raw_row": row})
 
     source_row_count = len(rows)
     return {
         "records_filtered": records_filtered,
         "source_row_count": source_row_count,
         "valid_rows": valid_rows,
+        "valid_row_entries": valid_row_entries,
         "invalid_rows": invalid_rows,
         "valid_row_count": len(valid_rows),
         "invalid_row_count": len(invalid_rows),
