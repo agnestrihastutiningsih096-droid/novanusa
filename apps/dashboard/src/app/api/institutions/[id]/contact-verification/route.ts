@@ -2,6 +2,7 @@ import { executeContactVerificationCommand } from "@/lib/contact-verification-co
 import { getContactVerification, saveContactVerification } from "@/lib/contact-verification-store";
 import { getOperatorActor } from "@/lib/email-sender";
 import { findProspectById } from "@/lib/institution-data";
+import { getContactOverrideEvents } from "@/lib/contact-override-store";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -12,5 +13,6 @@ export async function POST(request: Request, context: RouteContext) {
     findProspectById,
     getContactVerification,
     saveContactVerification,
+    getContactOverrideEvents,
   });
 }

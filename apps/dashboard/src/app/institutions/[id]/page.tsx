@@ -14,6 +14,8 @@ import { InstitutionOperatorProvider } from "./InstitutionOperatorContext";
 import { CONTACT_VERIFICATION_SOURCE, createContactFingerprint, getMatchingContactVerification } from "@/lib/contact-verification";
 import { getContactVerification } from "@/lib/contact-verification-store";
 import { findProspectById, formatIdr, loadProspects, splitExamples, splitList } from "@/lib/institution-data";
+import { applyEffectiveContact, resolveEffectiveContact } from "@/lib/contact-override";
+import { getContactOverrideEvents } from "@/lib/contact-override-store";
 
 type InstitutionWorkspacePageProps = {
   params: Promise<{ id: string }>;
@@ -75,13 +77,11 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
   const spseStatus = "SPSE_NOT_CHECKED_NATIONALLY";
   const needSummary = buildNeedSummary(categories, institution.total_relevant_packages, institution.total_pagu, examples);
   const actionSummary = nextOutreachAction(institution.contact_status, institution.send_readiness, institution.outreach_status);
-  const contactFingerprint = createContactFingerprint(
-    institution.institution_id,
-    institution.contact_email,
-    institution.contact_source_url,
-    CONTACT_VERIFICATION_SOURCE,
-  );
-  const persistedVerification = getMatchingContactVerification(institution, getContactVerification(id));
+  const overrideEvents = getContactOverrideEvents(id);
+  const effectiveContact = resolveEffectiveContact(institution, overrideEvents);
+  const effectiveInstitution = effectiveContact ? applyEffectiveContact(institution, effectiveContact) : institution;
+  const contactFingerprint = effectiveContact?.fingerprint ?? createContactFingerprint(institution.institution_id, institution.contact_email, institution.contact_source_url, CONTACT_VERIFICATION_SOURCE);
+  const persistedVerification = effectiveContact ? getMatchingContactVerification(effectiveInstitution, getContactVerification(id)) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -144,11 +144,12 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
             </dl>
             <ContactVerificationAction
               institutionId={institution.institution_id}
-              contactEmail={institution.contact_email}
-              evidenceUrl={institution.contact_source_url}
+              contactEmail={effectiveContact?.email ?? ""}
+              evidenceUrl={effectiveContact?.sourceUrl ?? ""}
               expectedContactFingerprint={contactFingerprint}
               verificationSource={CONTACT_VERIFICATION_SOURCE}
               initialVerification={persistedVerification}
+              initialEvents={overrideEvents}
             />
           </Card>
 
@@ -259,7 +260,7 @@ export default async function InstitutionWorkspacePage({ params }: InstitutionWo
         <DraftGenerator
           institutionId={institution.institution_id}
           institutionDisplayName={institution.institution_display_name}
-          contactEmail={institution.contact_email}
+          contactEmail={effectiveContact?.email ?? ""}
           categories={categories}
           packageCount={institution.total_relevant_packages}
           totalPagu={institution.total_pagu}

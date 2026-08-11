@@ -7,12 +7,14 @@ import {
   type ContactVerificationRecord,
 } from "./contact-verification.ts";
 import type { Prospect } from "./institution-data.ts";
+import { applyEffectiveContact, resolveEffectiveContact, type ContactOverrideEvent } from "./contact-override.ts";
 
 type Dependencies = {
   getOperatorActor: (request: Request) => string | null;
   findProspectById: (institutionId: string) => Prospect | undefined;
   getContactVerification: (institutionId: string) => ContactVerificationRecord | null;
   saveContactVerification: (record: ContactVerificationRecord) => ContactVerificationRecord;
+  getContactOverrideEvents?: (institutionId: string) => ContactOverrideEvent[];
   now?: () => string;
   createId?: () => string;
 };
@@ -47,8 +49,11 @@ export async function executeContactVerificationCommand(request: Request, instit
     return error(400, "INVALID_CONTACT_FINGERPRINT", "Expected contact fingerprint must be a SHA-256 digest.");
   }
 
-  const prospect = dependencies.findProspectById(institutionId);
-  if (!prospect) return error(404, "INSTITUTION_NOT_FOUND", "Institution not found.");
+  const canonicalProspect = dependencies.findProspectById(institutionId);
+  if (!canonicalProspect) return error(404, "INSTITUTION_NOT_FOUND", "Institution not found.");
+  const effective = resolveEffectiveContact(canonicalProspect, dependencies.getContactOverrideEvents?.(institutionId) ?? []);
+  if (!effective) return error(409, "CONTACT_MISMATCHED", "The rejected contact cannot be verified.");
+  const prospect = applyEffectiveContact(canonicalProspect, effective);
   if (prospect.contact_status.trim().toUpperCase() !== "CONTACT_FOUND") {
     return error(409, "CONTACT_STATUS_NOT_VERIFIED", "Contact must have CONTACT_FOUND status.");
   }

@@ -66,9 +66,10 @@ test("only matching persisted verification hydrates the VERIFIED presentation", 
   assert.equal(getMatchingContactVerification(prospect({ contact_source_url: "https://example.go.id/other" }), record), null);
 });
 
-test("institution page reads canonical verification and passes only its matching state", () => {
+test("institution page resolves effective contact and passes only its matching verification", () => {
   const source = fs.readFileSync(path.join(process.cwd(), "src", "app", "institutions", "[id]", "page.tsx"), "utf8");
-  assert.match(source, /getMatchingContactVerification\(institution, getContactVerification\(id\)\)/);
+  assert.match(source, /resolveEffectiveContact\(institution, overrideEvents\)/);
+  assert.match(source, /getMatchingContactVerification\(effectiveInstitution, getContactVerification\(id\)\)/);
   assert.match(source, /initialVerification=\{persistedVerification\}/);
   assert.match(source, /dynamic = "force-dynamic"/);
 });
@@ -77,7 +78,7 @@ test("verification UI renders persisted VERIFIED state and hydrates from POST su
   const source = fs.readFileSync(path.join(process.cwd(), "src", "app", "institutions", "[id]", "ContactVerificationAction.tsx"), "utf8");
   assert.match(source, /useState<ContactVerificationRecord \| null>\(props\.initialVerification\)/);
   assert.match(source, /setVerification\(payload\.verification\)/);
-  assert.match(source, /if \(verification\)/);
+  assert.match(source, /verification \? <>/);
   assert.match(source, />VERIFIED</);
   assert.match(source, /verification\.verifiedAt/);
   assert.match(source, /verification\.verifiedBy/);

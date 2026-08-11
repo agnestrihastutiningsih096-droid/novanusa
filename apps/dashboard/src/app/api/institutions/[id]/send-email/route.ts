@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import { NextResponse } from "next/server";
 import { mergeCanonicalContactVerification } from "@/lib/contact-verification";
 import { getContactVerification } from "@/lib/contact-verification-store";
+import { applyEffectiveContact, resolveEffectiveContact } from "@/lib/contact-override";
+import { getContactOverrideEvents } from "@/lib/contact-override-store";
 import { finalizeEmailSend, reserveEmailSend, type EmailSendHistoryRecord } from "@/lib/email-send-history-store";
 import { getEmailSendMode, getOperatorActor, getTestRecipient, sendEmailSafely } from "@/lib/email-sender";
 import { findProspectById, validateVerifiedContact } from "@/lib/institution-data";
@@ -48,7 +50,10 @@ export async function POST(request: Request, context: RouteContext) {
 
     const institution = findProspectById(id);
     if (!institution) return responseError("Institution not found.", 404, "INSTITUTION_NOT_FOUND");
-    const verifiedInstitution = mergeCanonicalContactVerification(institution, getContactVerification(id));
+    const effectiveContact = resolveEffectiveContact(institution, getContactOverrideEvents(id));
+    if (!effectiveContact) return responseError("Current contact was rejected and requires a replacement.", 409, "CONTACT_MISMATCHED");
+    const effectiveInstitution = applyEffectiveContact(institution, effectiveContact);
+    const verifiedInstitution = mergeCanonicalContactVerification(effectiveInstitution, getContactVerification(id));
     const contact = validateVerifiedContact(verifiedInstitution, id);
     if (!contact.ok) return responseError("Verified institutional contact is required.", 409, contact.code);
 
