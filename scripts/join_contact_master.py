@@ -2,11 +2,13 @@
 
 import argparse
 import csv
+import hashlib
 import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTREACH_PATH = ROOT / "outputs" / "dashboard" / "mitracom_sirup_institution_outreach_may_june_2026.csv"
@@ -27,6 +29,55 @@ SOURCE_PRIORITY = {
     "contact-qwen-master-clean.csv": 3,
     "tierA_contact_enriched_v2_2026.csv": 2,
     "tierA_contact_enriched_2026.csv": 2,
+}
+
+@dataclass(frozen=True)
+class SourceContract:
+    identity: frozenset[str]
+    authority: frozenset[str]
+    contact: frozenset[str]
+    provenance: frozenset[str]
+
+    @property
+    def required(self) -> frozenset[str]:
+        return self.identity | self.authority | self.contact | self.provenance
+
+
+TIER_A_CONTRACT = SourceContract(
+    identity=frozenset({"institution_name"}),
+    authority=frozenset({"kldi", "province"}),
+    contact=frozenset({
+        "research_email", "research_phone", "research_whatsapp",
+        "official_website", "official_email",
+    }),
+    provenance=frozenset({"research_source_url", "source_url", "contact_confidence"}),
+)
+KNOWN_SOURCE_SCHEMAS = {
+    "institutions_enriched_contacts.csv": SourceContract(
+        identity=frozenset({"name"}), authority=frozenset(),
+        contact=frozenset({
+            "email", "current_phone", "current_whatsapp", "contact_person", "position",
+        }),
+        provenance=frozenset({"match_confidence", "source_url"}),
+    ),
+    "contact-qwen-master-clean.csv": SourceContract(
+        identity=frozenset({"institution"}), authority=frozenset({"kldi"}),
+        contact=frozenset({"website", "email", "phone", "whatsapp"}),
+        provenance=frozenset({"source_url", "confidence_score"}),
+    ),
+    "tierA_contact_enriched_v2_2026.csv": TIER_A_CONTRACT,
+    "tierA_contact_enriched_2026.csv": TIER_A_CONTRACT,
+    "verified_cache_contacts_1640.csv": SourceContract(
+        identity=frozenset({"institution_name", "cache_institution"}),
+        authority=frozenset({"cache_kldi"}),
+        contact=frozenset({
+            "official_email", "procurement_email", "phone", "whatsapp",
+        }),
+        provenance=frozenset({
+            "source_url", "confidence_score", "verified_level", "match_status",
+            "audit_status", "institution_type",
+        }),
+    ),
 }
 
 NATURAL_MATCH_FIELDS = {
@@ -86,6 +137,17 @@ def parse_numeric_score(value: object, default: float = 0.0) -> float:
     return default
 
 
+def is_valid_provenance_url(value: object) -> bool:
+    text = clean(value)
+    if not text:
+        return False
+    try:
+        parsed = urlparse(text)
+        return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc and parsed.hostname)
+    except ValueError:
+        return False
+
+
 @dataclass
 class CanonicalContact:
     source_file: str
@@ -107,6 +169,8 @@ class CanonicalContact:
     contact_source_url: str
     contact_notes: str
     contact_source_type: str
+    endpoint_organization: str
+    endpoint_binding_explicit: bool
     match_keys: dict[str, str]
     completeness_score: float
 
@@ -128,11 +192,14 @@ def choose_contact_source_type(source_name: str) -> str:
         return "tierA_enriched"
     if source_name == "contact-qwen-master-clean.csv":
         return "master_crawler"
-    return "contact_master"
+    raise ValueError(f"unknown contact source filename: {source_name}")
 
 
 def source_rank(source_name: str) -> int:
-    return SOURCE_PRIORITY.get(source_name, 1)
+    try:
+        return SOURCE_PRIORITY[source_name]
+    except KeyError as exc:
+        raise ValueError(f"unknown contact source filename: {source_name}") from exc
 
 
 def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) -> CanonicalContact:
@@ -152,6 +219,8 @@ def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) ->
     contact_source_url = ""
     contact_notes = ""
     source_confidence = 0.0
+    endpoint_organization = ""
+    endpoint_binding_explicit = False
 
     if source_name == "institutions_enriched_contacts.csv":
         institution_name = best_nonempty(row.get("name"))
@@ -196,7 +265,7 @@ def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) ->
         institution_name = best_nonempty(row.get("institution_name"), row.get("cache_institution"))
         parent_organization = best_nonempty(row.get("cache_kldi"))
         work_unit = institution_name
-        region = best_nonempty(row.get("cache_kldi"), row.get("institution_type"))
+        region = ""
         official_website = best_nonempty(row.get("official_website"), row.get("website"))
         contact_email = best_nonempty(row.get("official_email"), row.get("procurement_email"))
         contact_phone = best_nonempty(row.get("phone"))
@@ -206,7 +275,9 @@ def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) ->
         contact_source_url = best_nonempty(row.get("source_url"))
         contact_notes = best_nonempty(row.get("notes"), row.get("audit_status"))
         source_confidence = parse_numeric_score(row.get("confidence_score"))
-    else:
+        endpoint_organization = best_nonempty(row.get("cache_institution"))
+        endpoint_binding_explicit = bool(endpoint_organization)
+    elif source_name == "contact-qwen-master-clean.csv":
         institution_name = best_nonempty(row.get("institution"), row.get("name"), row.get("institution_name"))
         parent_organization = best_nonempty(row.get("kldi"))
         work_unit = institution_name
@@ -219,6 +290,11 @@ def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) ->
         contact_source_url = best_nonempty(row.get("source_url"))
         contact_notes = best_nonempty(row.get("notes"), row.get("email_type"), row.get("phone_type"))
         source_confidence = parse_numeric_score(row.get("confidence_score"))
+    else:
+        raise ValueError(f"unknown contact source filename: {source_name}")
+
+    if not is_valid_provenance_url(contact_source_url):
+        contact_source_url = ""
 
     institution_display_name = build_display_name(work_unit, parent_organization)
     if not region:
@@ -262,15 +338,55 @@ def canonicalize_row(source_path: Path, row: dict[str, str], row_number: int) ->
         contact_source_url=contact_source_url,
         contact_notes=contact_notes,
         contact_source_type=source_type,
+        endpoint_organization=endpoint_organization,
+        endpoint_binding_explicit=endpoint_binding_explicit,
         match_keys=keys,
         completeness_score=completeness_score,
     )
 
 
 def load_contact_rows(source_path: Path) -> list[CanonicalContact]:
+    contract = KNOWN_SOURCE_SCHEMAS.get(source_path.name)
+    if contract is None:
+        raise ValueError(f"unknown contact source filename: {source_path.name}")
     with source_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
+        headers = set(reader.fieldnames or ())
+        missing = sorted(contract.required - headers)
+        if missing:
+            raise ValueError(
+                f"unsupported schema for {source_path.name}; missing required columns: "
+                + ", ".join(missing)
+            )
         return [canonicalize_row(source_path, row, index + 1) for index, row in enumerate(reader)]
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def select_equivalent_sources(source_paths: Iterable[Path]) -> list[Path]:
+    """Deduplicate identical known sources; reject ambiguous divergent duplicates."""
+    selected: list[Path] = []
+    by_name: dict[str, tuple[str, Path]] = {}
+    for source_path in source_paths:
+        if source_path.name not in KNOWN_SOURCE_SCHEMAS:
+            raise ValueError(f"unknown contact source filename: {source_path.name}")
+        digest = sha256_file(source_path)
+        previous = by_name.get(source_path.name)
+        if previous is None:
+            by_name[source_path.name] = (digest, source_path)
+            selected.append(source_path)
+        elif previous[0] != digest:
+            raise ValueError(
+                f"duplicate contact source conflict for {source_path.name}: "
+                f"{previous[1]} differs from {source_path}"
+            )
+    return selected
 
 
 def better_candidate(left: CanonicalContact, right: CanonicalContact) -> CanonicalContact:
@@ -325,11 +441,15 @@ def authority_is_consistent(
     candidate_parent, candidate_region = authority_signature(candidate)
     target_parent = normalize(target_parent_organization)
     target_region_norm = normalize(target_region)
+    if not candidate_parent and not candidate_region:
+        return False
     if candidate_parent and target_parent and candidate_parent != target_parent:
         return False
     if candidate_region and target_region_norm and candidate_region != target_region_norm:
         return False
-    return True
+    parent_bound = bool(candidate_parent and target_parent)
+    region_bound = bool(candidate_region and target_region_norm)
+    return parent_bound or region_bound
 
 
 def resolve_authoritative_candidate(
@@ -355,6 +475,31 @@ def resolve_authoritative_candidate(
     for candidate in same_authority[1:]:
         winner = better_candidate(winner, candidate)
     return winner
+
+
+def determine_contact_scope(
+    contact_status: str,
+    candidate: CanonicalContact | None,
+    target_institution: str,
+) -> str:
+    """Classify endpoint applicability independently of identity authority."""
+    if contact_status == "CONTACT_MISSING" or candidate is None:
+        return "UNRESOLVED"
+    if not candidate.endpoint_binding_explicit:
+        return "UNRESOLVED"
+    endpoint = normalize(candidate.endpoint_organization)
+    target = normalize(target_institution)
+    if not endpoint or not target:
+        return "UNRESOLVED"
+    if candidate.source_file == "verified_cache_contacts_1640.csv" and endpoint != target:
+        return "HIERARCHY_OFFICIAL"
+    if contact_status == "CONTACT_FOUND" and endpoint == target:
+        return "DIRECT_INSTITUTION"
+    return "UNRESOLVED"
+
+
+def is_direct_outreach_eligible(contact_status: str, contact_scope: str) -> bool:
+    return contact_status == "CONTACT_FOUND" and contact_scope == "DIRECT_INSTITUTION"
 
 
 def enrich_outreach_row(
@@ -414,15 +559,21 @@ def enrich_outreach_row(
                 "contact_source_type": "",
                 "contact_notes": "",
                 "contact_status": "CONTACT_MISSING",
+                "contact_scope": "UNRESOLVED",
             }
         )
         return enriched, "", ""
 
+    authoritative_source_url = (
+        matched.contact_source_url if is_valid_provenance_url(matched.contact_source_url) else ""
+    )
     contact_status = "CONTACT_MISSING"
-    if matched.contact_email and matched.contact_source_url:
+    if matched.contact_email and authoritative_source_url:
         contact_status = "CONTACT_FOUND"
-    elif matched.contact_email and not matched.contact_source_url:
+    elif matched.contact_email:
         contact_status = "CONTACT_NEEDS_REVIEW"
+    target_institution = work_unit or institution_name
+    contact_scope = determine_contact_scope(contact_status, matched, target_institution)
 
     enriched.update(
         {
@@ -441,10 +592,11 @@ def enrich_outreach_row(
             "contact_whatsapp": matched.contact_whatsapp,
             "contact_person": matched.contact_person,
             "contact_role": matched.contact_role,
-            "contact_source_url": matched.contact_source_url,
+            "contact_source_url": authoritative_source_url,
             "contact_source_type": matched.contact_source_type,
             "contact_notes": matched.contact_notes,
             "contact_status": contact_status,
+            "contact_scope": contact_scope,
         }
     )
     return enriched, match_type, matched.source_file
@@ -456,7 +608,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=ENRICHED_PATH)
     args = parser.parse_args()
 
-    available_sources = [path for path in CONTACT_SOURCE_CANDIDATES if path.exists()]
+    available_sources = select_equivalent_sources(
+        path for path in CONTACT_SOURCE_CANDIDATES if path.exists()
+    )
     if not available_sources:
         raise FileNotFoundError("No contact master datasets were found in the known candidate locations.")
 
@@ -503,6 +657,7 @@ def main() -> None:
             "contact_source_url",
             "contact_source_type",
             "contact_notes",
+            "contact_scope",
         ]
     )
 
