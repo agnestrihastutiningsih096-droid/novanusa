@@ -289,17 +289,13 @@ def better_candidate(left: CanonicalContact, right: CanonicalContact) -> Canonic
     return left if left_key >= right_key else right
 
 
-def build_index(candidates: Iterable[CanonicalContact]) -> dict[str, CanonicalContact]:
-    index: dict[str, CanonicalContact] = {}
+def build_index(candidates: Iterable[CanonicalContact]) -> dict[str, list[CanonicalContact]]:
+    index: dict[str, list[CanonicalContact]] = {}
     for candidate in candidates:
         for key in candidate.match_keys.values():
             if not key:
                 continue
-            existing = index.get(key)
-            if existing is None:
-                index[key] = candidate
-            else:
-                index[key] = better_candidate(existing, candidate)
+            index.setdefault(key, []).append(candidate)
     return index
 
 
@@ -316,7 +312,54 @@ def write_rows(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) ->
         writer.writerows(rows)
 
 
-def enrich_outreach_row(row: dict[str, str], index: dict[str, CanonicalContact]) -> tuple[dict[str, str], str, str]:
+def authority_signature(candidate: CanonicalContact) -> tuple[str, str]:
+    """Return only explicit authority dimensions; never infer missing values."""
+    return normalize(candidate.parent_organization), normalize(candidate.region)
+
+
+def authority_is_consistent(
+    candidate: CanonicalContact,
+    target_parent_organization: str,
+    target_region: str,
+) -> bool:
+    candidate_parent, candidate_region = authority_signature(candidate)
+    target_parent = normalize(target_parent_organization)
+    target_region_norm = normalize(target_region)
+    if candidate_parent and target_parent and candidate_parent != target_parent:
+        return False
+    if candidate_region and target_region_norm and candidate_region != target_region_norm:
+        return False
+    return True
+
+
+def resolve_authoritative_candidate(
+    candidates: Iterable[CanonicalContact],
+    target_parent_organization: str,
+    target_region: str,
+) -> CanonicalContact | None:
+    consistent = [
+        candidate
+        for candidate in candidates
+        if authority_is_consistent(candidate, target_parent_organization, target_region)
+    ]
+    authority_groups: dict[tuple[str, str], list[CanonicalContact]] = {}
+    for candidate in consistent:
+        authority_groups.setdefault(authority_signature(candidate), []).append(candidate)
+    if len(authority_groups) != 1:
+        return None
+
+    # Ranking may select evidence within one explicit authority, never identity
+    # across authorities.
+    same_authority = next(iter(authority_groups.values()))
+    winner = same_authority[0]
+    for candidate in same_authority[1:]:
+        winner = better_candidate(winner, candidate)
+    return winner
+
+
+def enrich_outreach_row(
+    row: dict[str, str], index: dict[str, list[CanonicalContact]]
+) -> tuple[dict[str, str], str, str]:
     institution_name = clean(row.get("institution_name"))
     institution_display_name = clean(row.get("institution_display_name"))
     parent_organization = clean(row.get("parent_organization"))
@@ -336,7 +379,12 @@ def enrich_outreach_row(row: dict[str, str], index: dict[str, CanonicalContact])
     for candidate_match_type, key in keys:
         if not key:
             continue
-        candidate = index.get(key)
+        # Normalized names are discovery-only and can never establish authority.
+        if candidate_match_type == "normalized_institution_name":
+            continue
+        candidate = resolve_authoritative_candidate(
+            index.get(key, []), parent_organization, region_hint
+        )
         if candidate is not None:
             matched = candidate
             match_type = candidate_match_type
