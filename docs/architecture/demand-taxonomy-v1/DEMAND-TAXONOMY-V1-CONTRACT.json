@@ -1,0 +1,233 @@
+{
+  "_canonical_sha256": "3864ef756fc96aa5e0454335f0ac38154d3a3417a6e5300b781ed550f657ffe0",
+  "_canonicalization": {
+    "encoding": "utf-8",
+    "ensure_ascii": false,
+    "hash_algorithm": "sha256",
+    "json_sort_keys": true,
+    "separators": [
+      ",",
+      ":"
+    ]
+  },
+  "_schema": "novanusa.demand-taxonomy.freeze-contract.v1",
+  "contract": {
+    "context": {
+      "CONSULTING_OR_LABOR_SERVICE": [
+        "jasa konsultansi",
+        "konsultan",
+        "tenaga ahli",
+        "programmer",
+        "jasa tenaga"
+      ],
+      "INSTALLATION_CONTEXT": [
+        "instalasi",
+        "pemasangan"
+      ],
+      "MAINTENANCE_CALIBRATION": [
+        "pemeliharaan",
+        "pemelihaaran",
+        "maintenance",
+        "perawatan",
+        "perbaikan",
+        "service",
+        "servis",
+        "harwat",
+        "kalibrasi"
+      ],
+      "MEDIA_SERVICE": [
+        "advertorial",
+        "publikasi",
+        "media televisi",
+        "iklan",
+        "reklame",
+        "spot iklan",
+        "tvc",
+        "lipsus"
+      ],
+      "PURCHASE_EXPLICIT": [
+        "pengadaan",
+        "pembelian",
+        "belanja modal",
+        "belanja barang",
+        "belanja alat",
+        "belanja peralatan"
+      ],
+      "RENTAL_SUBSCRIPTION_LICENSE": [
+        "sewa",
+        "rental",
+        "langganan",
+        "berlangganan",
+        "subscription",
+        "lisensi",
+        "license"
+      ]
+    },
+    "printing_resolver": "V6.7.8",
+    "taxonomy": {
+      "AIR_CONDITIONING": [
+        "air conditioner",
+        "air conditioning",
+        "ac split",
+        "pendingin ruangan"
+      ],
+      "AUDIO_CONFERENCE": [
+        "microphone",
+        "mikrofon",
+        "conference microphone",
+        "audio conference"
+      ],
+      "CAMERA": [
+        "kamera",
+        "camera digital",
+        "digital camera",
+        "camera mirrorless",
+        "mirrorless camera",
+        "camera dslr",
+        "dslr camera"
+      ],
+      "CCTV": [
+        "cctv"
+      ],
+      "COMPUTING": [
+        "laptop",
+        "notebook",
+        "desktop pc",
+        "komputer desktop",
+        "pc desktop",
+        "desktop computer",
+        "all in one pc",
+        "aio pc",
+        "mini pc",
+        "workstation"
+      ],
+      "DISPLAY": [
+        "digital signage",
+        "interactive display",
+        "interactive flat panel",
+        "televisi",
+        "monitor pc",
+        "pc monitor",
+        "led monitor",
+        "lcd monitor",
+        "monitor led",
+        "monitor lcd",
+        "monitor cctv",
+        "display monitor",
+        "pengadaan led display",
+        "belanja led display",
+        "peralatan led display"
+      ],
+      "DRONE": [
+        "drone",
+        "dji",
+        "gimbal"
+      ],
+      "MEDICAL_LAB": [
+        "dental chair",
+        "mikroskop",
+        "microscope",
+        "centrifuge",
+        "refrigerated centrifuge",
+        "low speed centrifuge",
+        "autoclave",
+        "dermatoscope",
+        "alat laboratorium",
+        "laboratory equipment"
+      ],
+      "MEDICAL_MONITOR": [
+        "patient monitor",
+        "pasien monitor",
+        "invasive monitor",
+        "blood pressure monitor",
+        "nibp monitor"
+      ],
+      "NETWORKING": [
+        "router",
+        "network switch",
+        "access point",
+        "wireless access point",
+        "perangkat switch jaringan",
+        "access switch jaringan"
+      ],
+      "NETWORK_MATERIAL": [
+        "kabel jaringan utp",
+        "kabel lan",
+        "kabel fiber optic",
+        "kabel fiber optik",
+        "jaringan fiber optic",
+        "jaringan fiber optik",
+        "peralatan fiber optic",
+        "peralatan fiber optik",
+        "backbone fiber optic",
+        "backbone fiber optik",
+        "gpon",
+        "fusion splicer",
+        "optical time domain reflectometer"
+      ],
+      "OFFICE_APPLIANCE": [
+        "dispenser",
+        "coffee machine",
+        "mesin kopi",
+        "paper shredder",
+        "penghancur kertas"
+      ],
+      "OFFICE_FURNITURE": [
+        "meja kantor",
+        "kursi kantor",
+        "meja kerja",
+        "kursi kerja",
+        "meja rapat",
+        "kursi rapat",
+        "lemari arsip",
+        "filing cabinet"
+      ],
+      "POWER": [
+        "ups",
+        "uninterruptible power supply",
+        "stabilizer listrik"
+      ],
+      "SERVER": [
+        "server",
+        "rack server"
+      ],
+      "STORAGE": [
+        "network attached storage",
+        "nas storage",
+        "storage server",
+        "hard disk eksternal",
+        "external ssd",
+        "ssd eksternal"
+      ],
+      "VIDEO_CONFERENCE_HARDWARE": [
+        "conference camera",
+        "video conference camera",
+        "camera video conference",
+        "perangkat video conference",
+        "alat video conference",
+        "sistem video conference"
+      ],
+      "VIDEO_CONFERENCE_SOFTWARE_LICENSE": [
+        "lisensi video conference",
+        "aplikasi video conference",
+        "langganan video conference",
+        "video conferencing",
+        "teleconference"
+      ]
+    },
+    "unverified_expansion": [
+      "tower server",
+      "blade server",
+      "surveillance camera",
+      "conference speaker",
+      "speaker conference",
+      "web conference",
+      "firewall appliance",
+      "external hard drive",
+      "voltage stabilizer",
+      "kursi dental",
+      "timbangan medis"
+    ],
+    "version": "DEMAND_TAXONOMY_V1_CANDIDATE_FINAL_R2_2_2026-08-14"
+  }
+}
