@@ -1,0 +1,45 @@
+{
+  "aggregation_key": "idSatker",
+  "artifact": {
+    "csv_sha256": "e34a230aad3978c11199f55e38c0065230fbe8cea2ea5de03f3fcafca72ac8ab",
+    "row_count": 10238
+  },
+  "authority": {
+    "ai_score": false,
+    "contact_authority": false,
+    "current_name_authority": false,
+    "current_opportunity_authority": false,
+    "email_send_authority": false,
+    "numeric_opportunity_score": false,
+    "outreach_authority": false
+  },
+  "counts": {
+    "aggregated_idsatker_rows": 10238,
+    "cross_idkldi_conflicts": 0,
+    "cross_kldi_conflicts": 0,
+    "governed_matched_rows": 32663,
+    "matched_idsatker_with_name_variants": 16,
+    "prefilter_rows": 46369
+  },
+  "historical_only": true,
+  "identity_policy": {
+    "conflicted_name_policy": "STORE_VARIANTS_AND_MARK_CURRENT_NAME_UNRESOLVED",
+    "current_name_requires_current_state_refresh": true,
+    "historical_display_name_is_current_authority": false,
+    "historical_display_name_rule": "MOST_FREQUENT_THEN_EARLIEST_OBSERVED_THEN_LEXICAL",
+    "idsatker_is_historical_identity_key": true
+  },
+  "schema": "novanusa.historical-buyer-aggregation.v1",
+  "source": {
+    "corpus_rows": 3195829,
+    "database": "D:\\AI_WORKSPACE\\mia-automation\\sirup_2026.duckdb",
+    "database_mutated": false,
+    "table": "main.sirup_raw"
+  },
+  "status": "CANDIDATE",
+  "taxonomy": {
+    "printing_resolver_version": "V6.7.8",
+    "sha256": "3864ef756fc96aa5e0454335f0ac38154d3a3417a6e5300b781ed550f657ffe0",
+    "version": "DEMAND_TAXONOMY_V1_CANDIDATE_FINAL_R2_2_2026-08-14"
+  }
+}
