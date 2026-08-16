@@ -88,14 +88,16 @@ class SnapshotPromotionTests(unittest.TestCase):
                     sumberDana varchar,
                     paket varchar,
                     pemilihan varchar,
-                    idBulan integer
+                    idBulan integer,
+                    idSatker bigint,
+                    idKldi varchar
                 )
                 """
             )
             connection.execute(
-                "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [identifier, f"ref-{identifier}", 1.0, "satker", "kldi", "lokasi",
-                 "barang", "tender", "apbn", "paket", "pemilihan", 1],
+                 "barang", "tender", "apbn", "paket", "pemilihan", 1, 10, "KLDI"],
             )
         finally:
             connection.close()
@@ -276,12 +278,13 @@ class SnapshotPromotionTests(unittest.TestCase):
                     id bigint primary key, id_referensi varchar, pagu double,
                     satuanKerja varchar, kldi varchar, lokasi varchar,
                     jenisPengadaan varchar, metode varchar, sumberDana varchar,
-                    paket varchar, pemilihan varchar, idBulan integer
+                    paket varchar, pemilihan varchar, idBulan integer,
+                    idSatker bigint, idKldi varchar
                 )
                 """
             )
             connection.execute(
-                "insert into sirup_raw values (0, 'baseline', 1, '', '', '', '', '', '', '', '', 1)"
+                "insert into sirup_raw values (0, 'baseline', 1, '', '', '', '', '', '', '', '', 1, 10, 'KLDI')"
             )
         finally:
             connection.close()
@@ -806,10 +809,10 @@ class SnapshotPromotionTests(unittest.TestCase):
                 f"create table sirup_raw (id bigint {nullability}, id_referensi varchar, "
                 "pagu double, satuanKerja varchar, kldi varchar, lokasi varchar, "
                 "jenisPengadaan varchar, metode varchar, sumberDana varchar, paket varchar, "
-                "pemilihan varchar, idBulan integer)"
+                "pemilihan varchar, idBulan integer, idSatker bigint, idKldi varchar)"
             )
             for identifier in ids:
-                connection.execute("insert into sirup_raw values (?, '', 1, '', '', '', '', '', '', '', '', 1)", [identifier])
+                connection.execute("insert into sirup_raw values (?, '', 1, '', '', '', '', '', '', '', '', 1, 10, 'KLDI')", [identifier])
         finally:
             connection.close()
         facts = validator.inspect_database(database)

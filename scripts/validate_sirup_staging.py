@@ -26,6 +26,8 @@ EXPECTED_SCHEMA = [
     ("paket", "VARCHAR", False, False),
     ("pemilihan", "VARCHAR", False, False),
     ("idBulan", "INTEGER", False, False),
+    ("idSatker", "BIGINT", False, False),
+    ("idKldi", "VARCHAR", False, False),
 ]
 REQUIRED_MANIFEST_FIELDS = {
     "manifest_version",

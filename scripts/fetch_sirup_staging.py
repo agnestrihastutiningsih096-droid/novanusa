@@ -53,6 +53,8 @@ REQUIRED_FIELDS = {
     "paket",
     "pemilihan",
     "idBulan",
+    "idSatker",
+    "idKldi",
 }
 
 
@@ -627,7 +629,9 @@ def initialize_database(path: Path) -> None:
                 sumberDana varchar,
                 paket varchar,
                 pemilihan varchar,
-                idBulan integer
+                idBulan integer,
+                idSatker bigint,
+                idKldi varchar
             )
             """
         )
@@ -668,6 +672,8 @@ def canonical_storage_row_tuple(row):
         None if pagu is None else float(pagu),
         *(varchar_value(field) for field in varchar_fields[1:]),
         integer_value("idBulan"),
+        integer_value("idSatker"),
+        varchar_value("idKldi"),
     )
 
 
@@ -685,6 +691,8 @@ def inspect_canonical_page_state(database_path, rows):
         "paket",
         "pemilihan",
         "idBulan",
+        "idSatker",
+        "idKldi",
     )
     expected_rows = []
     identifiers = []
@@ -1190,10 +1198,7 @@ def write_quarantine_replay_reconciliation_checkpoint(
 
 
 def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
-    values = [tuple(row.get(field) for field in (
-            "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
-            "jenisPengadaan", "metode", "sumberDana", "paket", "pemilihan", "idBulan",
-        )) for row in rows]
+    values = [canonical_storage_row_tuple(row) for row in rows]
     connection = duckdb.connect(str(path))
     try:
         connection.execute("begin transaction")
@@ -1204,7 +1209,7 @@ def append_page(path: Path, rows: list[dict[str, Any]]) -> None:
         ).fetchone()[0]:
             raise RuntimeError("source returned ids already present in staging")
         connection.executemany(
-            "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values
+            "insert into sirup_raw values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values
         )
         connection.execute("commit")
     except Exception:

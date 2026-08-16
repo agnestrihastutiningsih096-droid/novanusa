@@ -1739,13 +1739,14 @@ class InspectCanonicalPageStateTests(unittest.TestCase):
     fields = (
         "id", "id_referensi", "pagu", "satuanKerja", "kldi", "lokasi",
         "jenisPengadaan", "metode", "sumberDana", "paket", "pemilihan", "idBulan",
+        "idSatker", "idKldi",
     )
 
     def make_row(self, identifier, suffix=""):
         return {
             field: (
                 identifier
-                if field in {"id", "idBulan"}
+                if field in {"id", "idBulan", "idSatker"}
                 else float(identifier)
                 if field == "pagu"
                 else f"{field}-{identifier}{suffix}"
@@ -1905,9 +1906,16 @@ class InspectCanonicalPageStateTests(unittest.TestCase):
         self.assertEqual(
             (861, "id_referensi-861", 12.5, "satuanKerja-861", "kldi-861",
              "lokasi-861", "jenisPengadaan-861", "metode-861", "sumberDana-861",
-             "paket-861", "pemilihan-861", 7),
+             "paket-861", "pemilihan-861", 7, 861, "idKldi-861"),
             fetch_sirup_staging.canonical_storage_row_tuple(row),
         )
+
+    def test_source_identity_normalization_preserves_integer_and_string_values(self):
+        row = self.make_row(861)
+        row.update({"idSatker": "42", "idKldi": "  Mixed Case  "})
+        normalized = fetch_sirup_staging.canonical_storage_row_tuple(row)
+        self.assertEqual(42, normalized[-2])
+        self.assertEqual("  Mixed Case  ", normalized[-1])
 
     def test_helper_does_not_call_write_methods_or_append_page(self):
         row = self.make_row(1)
@@ -3632,6 +3640,8 @@ class StrictRuntimeAccountingTests(unittest.TestCase):
             "paket": "package",
             "pemilihan": "selection",
             "idBulan": 1,
+            "idSatker": 10,
+            "idKldi": "KLDI",
         }
 
     def test_main_initializes_only_explicit_runtime_counters(self):
