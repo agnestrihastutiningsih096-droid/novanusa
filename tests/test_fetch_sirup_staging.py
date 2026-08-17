@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import fetch_sirup_staging  # noqa: E402
+import sirup_receipt_chain  # noqa: E402
 from fetch_sirup_staging import validate_page  # noqa: E402
 
 
@@ -3856,6 +3857,80 @@ class ValidationFailureEvidenceTests(unittest.TestCase):
                         draw=1,
                         full_snapshot=False,
                     )
+
+
+class ReceiptChainCollectorIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def row(identifier):
+        return {
+            "id": identifier, "id_referensi": f"ref-{identifier}", "pagu": 1.0,
+            "satuanKerja": "unit", "kldi": "agency", "lokasi": "location",
+            "jenisPengadaan": "goods", "metode": "method", "sumberDana": "fund",
+            "paket": "package", "pemilihan": "selection", "idBulan": 1,
+            "idSatker": 10, "idKldi": "KLDI",
+        }
+
+    @staticmethod
+    def arguments(staging_root):
+        return [
+            "fetch_sirup_staging.py", "--year", "2026", "--page-size", "2",
+            "--max-rows", "2", "--staging-root", str(staging_root), "--delay", "0",
+        ]
+
+    def test_successful_bounded_run_writes_verifiable_authentic_chain(self):
+        payload = {"recordsFiltered": 100, "data": [self.row(2), self.row(1)]}
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory)
+            with (
+                mock.patch.object(sys, "argv", self.arguments(staging_root)),
+                mock.patch.object(fetch_sirup_staging, "fetch_page", return_value=(payload, 0)),
+            ):
+                self.assertEqual(0, fetch_sirup_staging.main())
+            run_dir = next(path for path in staging_root.iterdir() if path.is_dir())
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            result = sirup_receipt_chain.verify_receipt_chain(
+                run_dir, manifest=manifest, require_completion=True
+            )
+            receipts = sirup_receipt_chain._parse_lines(
+                run_dir / sirup_receipt_chain.RECEIPTS_NAME
+            )
+            terminal = receipts[-1]
+            database = run_dir / "sirup_staging.duckdb"
+
+            self.assertTrue(result["valid"], result)
+            self.assertEqual("COMPLETION", result["terminal_type"])
+            self.assertTrue(all(receipt["run_id"] == run_dir.name for receipt in receipts))
+            self.assertEqual(
+                {"processed": 2, "canonical_total": 2, "quarantine_total": 0},
+                {key: terminal["payload"][key] for key in ("processed", "canonical_total", "quarantine_total")},
+            )
+            self.assertEqual(fetch_sirup_staging.sha256_file(database), terminal["payload"]["duckdb_sha256"])
+            self.assertFalse(terminal["payload"]["promotion_flag"])
+            self.assertFalse(manifest["promotion_eligible"])
+            self.assertEqual(terminal["hash"], manifest["chain_head"])
+
+    def test_failed_run_has_abort_and_never_false_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory)
+            with (
+                mock.patch.object(sys, "argv", self.arguments(staging_root)),
+                mock.patch.object(
+                    fetch_sirup_staging, "fetch_page", side_effect=RuntimeError("failed")
+                ),
+                mock.patch("sys.stderr", io.StringIO()),
+            ):
+                self.assertEqual(1, fetch_sirup_staging.main())
+            run_dir = next(path for path in staging_root.iterdir() if path.is_dir())
+            receipts = sirup_receipt_chain._parse_lines(
+                run_dir / sirup_receipt_chain.RECEIPTS_NAME
+            )
+            self.assertEqual("ABORT", receipts[-1]["receipt_type"])
+            self.assertNotIn("COMPLETION", [receipt["receipt_type"] for receipt in receipts])
+            self.assertFalse(
+                sirup_receipt_chain.verify_receipt_chain(
+                    run_dir, require_completion=True
+                )["valid"]
+            )
 
 
 if __name__ == "__main__":

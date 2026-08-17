@@ -26,6 +26,7 @@ from sirup_source_provenance import (
     append_source_provenance_record,
     build_source_provenance_record,
 )
+from sirup_receipt_chain import ReceiptWriter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -276,6 +277,7 @@ def fetch_page(
     draw: int,
     timeout: float,
     retries: int,
+    retry_observer=None,
 ) -> tuple[dict[str, Any], int]:
     params = page_request_params(year, start, length, draw)
     url = f"{SOURCE_ENDPOINT}?{urllib.parse.urlencode(params)}"
@@ -295,6 +297,8 @@ def fetch_page(
         except (requests.RequestException, json.JSONDecodeError, RuntimeError) as exc:
             last_error = exc
             if attempt < retries:
+                if retry_observer is not None:
+                    retry_observer(start, length, type(exc).__name__, attempt + 1)
                 time.sleep(min(2**attempt, 4))
     raise RuntimeError(f"source request failed after {retries + 1} attempts: {last_error}")
 
@@ -1315,6 +1319,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    receipt_writer = None
+    receipt_terminal = False
+    source_rows_processed = canonical_rows_collected = quarantine_rows = 0
     session = requests.Session()
     session.headers.update({
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -1519,6 +1526,17 @@ def main() -> int:
                 raise RuntimeError(f"staging run already exists: {run_dir}")
             run_dir.mkdir(parents=True)
             initialize_database(database_path)
+            if database_path.is_file():
+                receipt_writer = ReceiptWriter(run_dir)
+                receipt_writer.append("ANCHOR", {
+                    "endpoint": SOURCE_ENDPOINT,
+                    "year": args.year,
+                    "page_size": args.page_size,
+                    "order_column": 11,
+                    "order_direction": "desc",
+                    "full_snapshot": args.full_snapshot,
+                    "mode": args.mode,
+                })
             if args.mode == "quarantine":
                 (run_dir / SOURCE_PROVENANCE_PATH_NAME).mkdir()
             source_rows_processed = 0
@@ -1547,6 +1565,16 @@ def main() -> int:
                 draw=page_count + 1,
                 timeout=args.timeout,
                 retries=args.retries,
+                retry_observer=(
+                    None if receipt_writer is None else
+                    lambda retry_start, retry_length, error_class, retry_index:
+                    receipt_writer.append("RETRY", {
+                        "start": retry_start,
+                        "page_size": retry_length,
+                        "error_class": error_class,
+                        "retry_index": retry_index,
+                    })
+                ),
             )
             if args.mode == "strict":
                 page_rows, expected_source_count = validate_page(
@@ -1627,6 +1655,25 @@ def main() -> int:
                 quarantine_rows = next_accounting["quarantine_rows"]
                 retries_used += page_retries
                 page_count += 1
+            if receipt_writer is not None:
+                canonical_payload = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+                receipt_writer.append("PAGE", {
+                    "start": source_rows_processed - len(payload["data"]),
+                    "page_size": length,
+                    "returned_row_count": len(payload["data"]),
+                    "canonical_row_count": (
+                        len(page_rows) if args.mode == "strict"
+                        else len(prepared_transaction["classification"]["valid_rows"])
+                    ),
+                    "quarantined_row_count": (
+                        0 if args.mode == "strict"
+                        else len(prepared_transaction["classification"]["invalid_rows"])
+                    ),
+                    "page_rows_digest": hashlib.sha256(canonical_payload).hexdigest(),
+                    "source_count_observed": expected_source_count,
+                })
             if (
                 args.stop_after_rows is not None
                 and source_rows_processed >= args.stop_after_rows
@@ -1638,6 +1685,8 @@ def main() -> int:
                 )
                 print(f"staging database: {database_path}")
                 print(f"checkpoint: {checkpoint_path}")
+                if receipt_writer is not None:
+                    receipt_writer.close()
                 session.close()
                 return 0
             if target_row_count is None or source_rows_processed < target_row_count:
@@ -1649,6 +1698,21 @@ def main() -> int:
             raise RuntimeError("staging database row or unique-id validation failed")
         digest = sha256_file(database_path)
         completed_at = utc_now()
+        chain_head = None
+        if receipt_writer is not None:
+            terminal = receipt_writer.append("COMPLETION", {
+                "terminal_reason": "NORMAL_COMPLETION",
+                "processed": source_rows_processed,
+                "canonical_total": canonical_rows_collected,
+                "quarantine_total": quarantine_rows,
+                "source_count_start": expected_source_count,
+                "source_count_end": expected_source_count,
+                "drift_status": "NO_DRIFT",
+                "duckdb_sha256": digest,
+                "promotion_flag": False,
+            })
+            chain_head = terminal["hash"]
+            receipt_terminal = True
         manifest = {
             "manifest_version": 1,
             "run_id": run_id,
@@ -1672,6 +1736,7 @@ def main() -> int:
             "request_count": page_count,
             "retries_used": retries_used,
             "sha256": digest,
+            **({"chain_head": chain_head} if chain_head is not None else {}),
             "validation": {
                 "response_shape": "passed",
                 "requested_row_count": "passed",
@@ -1686,11 +1751,32 @@ def main() -> int:
         }
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except Exception as exc:
+        if receipt_writer is not None and not receipt_terminal:
+            try:
+                database_digest = (
+                    sha256_file(database_path) if database_path.is_file() else "0" * 64
+                )
+                receipt_writer.append("ABORT", {
+                    "terminal_reason": "FETCH_FAILED",
+                    "error_class": type(exc).__name__,
+                    "failure_stage": "ACQUISITION",
+                    "processed": source_rows_processed,
+                    "canonical_total": canonical_rows_collected,
+                    "quarantined_total": quarantine_rows,
+                    "duckdb_sha256": database_digest,
+                })
+                receipt_terminal = True
+            except Exception:
+                pass
+        if receipt_writer is not None:
+            receipt_writer.close()
         session.close()
         print(f"staging fetch failed: {exc}", file=sys.stderr)
         print(f"failed staging directory: {run_dir}", file=sys.stderr)
         return 1
 
+    if receipt_writer is not None:
+        receipt_writer.close()
     session.close()
     print(f"rows: {row_count}")
     print(f"distinct ids: {distinct_ids}")
