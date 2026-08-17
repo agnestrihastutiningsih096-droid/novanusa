@@ -58,6 +58,7 @@ OUTPUT_COLUMNS = [
     "package_code",
     "package_name",
     "institution_name",
+    "satker",
     "hps_or_pagu",
     "stage_or_status",
     "method",
@@ -86,43 +87,35 @@ class HTMLTableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[list[list[str]]] = []
-        self._in_table = False
-        self._in_row = False
-        self._in_cell = False
-        self._current_table: list[list[str]] = []
-        self._current_row: list[str] = []
-        self._current_cell: list[str] = []
+        self._table_stack: list[dict[str, Any]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "table":
-            self._in_table = True
-            self._current_table = []
-        elif self._in_table and tag == "tr":
-            self._in_row = True
-            self._current_row = []
-        elif self._in_row and tag in {"td", "th"}:
-            self._in_cell = True
-            self._current_cell = []
+            self._table_stack.append({"table": [], "row": None, "cell": None})
+        elif self._table_stack and tag == "tr":
+            self._table_stack[-1]["row"] = []
+        elif self._table_stack and self._table_stack[-1]["row"] is not None and tag in {"td", "th"}:
+            self._table_stack[-1]["cell"] = []
 
     def handle_data(self, data: str) -> None:
-        if self._in_cell:
-            self._current_cell.append(data)
+        if self._table_stack and self._table_stack[-1]["cell"] is not None:
+            self._table_stack[-1]["cell"].append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in {"td", "th"} and self._in_cell:
-            self._current_row.append(clean(" ".join(self._current_cell)))
-            self._current_cell = []
-            self._in_cell = False
-        elif tag == "tr" and self._in_row:
-            if any(cell for cell in self._current_row):
-                self._current_table.append(self._current_row)
-            self._current_row = []
-            self._in_row = False
-        elif tag == "table" and self._in_table:
-            if self._current_table:
-                self.tables.append(self._current_table)
-            self._current_table = []
-            self._in_table = False
+        if not self._table_stack:
+            return
+        state = self._table_stack[-1]
+        if tag in {"td", "th"} and state["cell"] is not None:
+            state["row"].append(clean(" ".join(state["cell"])))
+            state["cell"] = None
+        elif tag == "tr" and state["row"] is not None:
+            if any(cell for cell in state["row"]):
+                state["table"].append(state["row"])
+            state["row"] = None
+        elif tag == "table":
+            state = self._table_stack.pop()
+            if state["table"]:
+                self.tables.append(state["table"])
 
 
 class AnchorParser(HTMLParser):
@@ -567,6 +560,7 @@ def collect_package_detail(
         "package_code": clean(detail_fields.get("package_code") or package_code),
         "package_name": clean(detail_fields.get("package_name") or package_name),
         "institution_name": clean(detail_fields.get("institution_name") or package_row.get("institution_name", "")),
+        "satker": clean(detail_fields.get("satker", "")),
         "hps_or_pagu": clean(detail_fields.get("hps_or_pagu") or package_row.get("hps_or_pagu", "")),
         "stage_or_status": clean(detail_fields.get("stage_or_status") or package_row.get("stage_or_status", "")),
         "method": clean(detail_fields.get("method") or package_row.get("method", "")),
