@@ -18,6 +18,8 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener as urllib_
 
 import pandas as pd
 
+from scripts.kldi_lpse_routing import KldiLpseRoutingBinding, lookup_lpse_route
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "data" / "reference" / "lpse" / "lpse_registry.csv"
@@ -427,9 +429,24 @@ def fetch_subpage_snapshot(url: str, opener: Any, timeout: int) -> tuple[str, di
         }
 
 
-def select_registry_rows(df: pd.DataFrame, limit_lpse: int) -> list[dict[str, Any]]:
+def select_registry_rows(
+    df: pd.DataFrame,
+    limit_lpse: int,
+    routing_binding: KldiLpseRoutingBinding | None = None,
+) -> list[dict[str, Any]]:
     frame = df.copy()
     frame["official_lpse_url"] = frame["official_lpse_url"].fillna("").astype(str).str.strip()
+    if routing_binding is not None:
+        route = lookup_lpse_route(routing_binding)
+        if route is None:
+            raise ValueError("Explicit KLDI-LPSE routing binding is not routable")
+        routed = frame[frame["official_lpse_url"] == route]
+        if len(routed) != 1:
+            raise ValueError("Explicit KLDI-LPSE route must match exactly one registry row")
+        routed = routed.copy()
+        routed["slug"] = routed["official_lpse_url"].map(infer_slug)
+        routed["base_lpse_url"] = routed["official_lpse_url"].map(base_lpse_url)
+        return routed.to_dict(orient="records")
     if "menggunakan_spse" in frame.columns:
         frame = frame[frame["menggunakan_spse"].apply(boolish)]
     if "dapat_diakses" in frame.columns:
@@ -581,13 +598,16 @@ def collect_package_detail(
     return row
 
 
-def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def collect(
+    args: argparse.Namespace,
+    routing_binding: KldiLpseRoutingBinding | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     registry = pd.read_csv(REGISTRY_PATH)
     if args.national_sample and args.national_sample.exists():
         sample_context = pd.read_csv(args.national_sample)
     else:
         sample_context = pd.DataFrame()
-    selected = select_registry_rows(registry, args.limit_lpse)
+    selected = select_registry_rows(registry, args.limit_lpse, routing_binding)
     opener = make_opener()
     collected_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     rows: list[dict[str, Any]] = []
