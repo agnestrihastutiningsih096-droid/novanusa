@@ -1,13 +1,19 @@
+import argparse
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
 
 from scripts.collect_lpse_detail_evidence import (
     OUTPUT_COLUMNS,
+    build_cli_routing_binding,
     extract_tables,
+    main,
     parse_detail_fields,
+    routing_binding_from_args,
     select_registry_rows,
 )
 from scripts.kldi_lpse_routing import (
@@ -137,6 +143,97 @@ class RoutingSelectionTests(unittest.TestCase):
         self.assertNotIn("institution_name", selected[0])
         self.assertNotIn("satker", selected[0])
         self.assertNotIn("realization", selected[0])
+
+
+class CliRoutingBindingTests(unittest.TestCase):
+    ROUTE = "https://spse.inaproc.id/haltengkab"
+
+    def sirup_result(self, *, candidates=None):
+        if candidates is None:
+            candidates = (SimpleNamespace(id_kldi="D294", kldi_name="Kab. Halmahera Tengah"),)
+        return SimpleNamespace(candidates=candidates, provenance=SimpleNamespace(
+            acquisition_id="20260817T043259Z-2026-100rows",
+            raw_receipt_id="60ccad916491f8100fe9a14340f0cd4609ca54f0e4f647ad97207ef73ac6b840",
+            observed_at="2026-08-17T04:33:00.921Z",
+        ))
+
+    def registry(self):
+        return pd.DataFrame([{
+            "nama_lpse": "LPSE Kabupaten Halmahera Tengah",
+            "official_lpse_url": self.ROUTE,
+            "provinsi": "Maluku Utara",
+            "kategori_instansi": "Pemerintah Kabupaten",
+        }])
+
+    def metadata(self):
+        digest = "011d54c98b82b035732565715a8b732cb8e315b602a2d6c13f98f545485930f7"
+        return {"registry_artifact_id": "novanusa:lpse-registry:csv", "registry_artifact_hash": digest, "registry_version": f"sha256:{digest}"}
+
+    def build(self, *, result=None, registry=None, metadata=None):
+        with (
+            patch("scripts.collect_lpse_detail_evidence.acquire_validated_sirup", return_value=result or self.sirup_result()),
+            patch("scripts.collect_lpse_detail_evidence.load_registry_artifact_metadata", return_value=metadata or self.metadata()),
+            patch("scripts.collect_lpse_detail_evidence.pd.read_csv", return_value=self.registry() if registry is None else registry),
+        ):
+            return build_cli_routing_binding("D294", Path("validated-run"))
+
+    def test_explicit_d294_builds_active_canonical_binding_and_exact_route(self):
+        binding = self.build()
+        self.assertIs(binding.status, KldiLpseRoutingStatus.ROUTING_ACTIVE)
+        self.assertEqual(binding.canonical_kldi_id, "D294")
+        self.assertEqual(binding.official_lpse_url, self.ROUTE)
+        self.assertEqual(binding.sirup_acquisition_run_id, "20260817T043259Z-2026-100rows")
+        self.assertEqual(binding.sirup_source_version, "sirup-authenticated-2026-08-17")
+        self.assertEqual(binding.registry_version, self.metadata()["registry_version"])
+
+    def test_main_passes_constructed_binding_to_collector(self):
+        binding = self.build()
+        args = argparse.Namespace(
+            routing_kldi_id="D294", sirup_run_directory=Path("validated-run"),
+            parsed_csv=Path("parsed.csv"), summary=Path("summary.json"), output=Path("output.xlsx"),
+        )
+        with (
+            patch("scripts.collect_lpse_detail_evidence.parse_args", return_value=args),
+            patch("scripts.collect_lpse_detail_evidence.routing_binding_from_args", return_value=binding),
+            patch("scripts.collect_lpse_detail_evidence.collect", return_value=([], {})) as collector,
+            patch("scripts.collect_lpse_detail_evidence.write_csv"), patch("scripts.collect_lpse_detail_evidence.save_text"),
+            patch("scripts.collect_lpse_detail_evidence.write_excel"),
+        ):
+            main()
+        collector.assert_called_once_with(args, binding)
+
+    def test_mismatched_or_stale_routing_authority_fails_closed(self):
+        with (
+            patch("scripts.collect_lpse_detail_evidence.acquire_validated_sirup", return_value=self.sirup_result()),
+            patch("scripts.collect_lpse_detail_evidence.load_registry_artifact_metadata", side_effect=ValueError("stale registry")),
+            patch("scripts.collect_lpse_detail_evidence.pd.read_csv") as registry_read,
+            self.assertRaises(ValueError),
+        ):
+            build_cli_routing_binding("D294", Path("validated-run"))
+        registry_read.assert_not_called()
+
+    def test_ambiguous_or_missing_sirup_evidence_fails_closed(self):
+        cases = ((), (
+            SimpleNamespace(id_kldi="D294", kldi_name="Kab. Halmahera Tengah"),
+            SimpleNamespace(id_kldi="D294", kldi_name="Kab. Different"),
+        ))
+        for candidates in cases:
+            with self.subTest(candidates=candidates), self.assertRaises(ValueError):
+                self.build(result=self.sirup_result(candidates=candidates))
+
+    def test_no_explicit_routing_input_preserves_non_routing_behavior(self):
+        args = argparse.Namespace(routing_kldi_id=None, sirup_run_directory=None)
+        with patch("scripts.collect_lpse_detail_evidence.build_cli_routing_binding") as builder:
+            self.assertIsNone(routing_binding_from_args(args))
+        builder.assert_not_called()
+
+    def test_partial_routing_arguments_fail_closed(self):
+        for args in (
+            argparse.Namespace(routing_kldi_id="D294", sirup_run_directory=None),
+            argparse.Namespace(routing_kldi_id=None, sirup_run_directory=Path("validated-run")),
+        ):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                routing_binding_from_args(args)
 
 
 if __name__ == "__main__":

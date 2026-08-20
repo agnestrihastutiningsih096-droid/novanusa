@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +19,17 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener as urllib_
 
 import pandas as pd
 
-from scripts.kldi_lpse_routing import KldiLpseRoutingBinding, lookup_lpse_route
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from scripts.build_lpse_registry import DEFAULT_METADATA, load_registry_artifact_metadata
+from scripts.current_rup_sirup_adapter import acquire as acquire_validated_sirup
+from scripts.kldi_lpse_routing import (
+    KldiLpseRoutingBinding, KldiLpseRoutingStatus, LpseRegistryEvidence,
+    SirupRoutingEvidence, build_kldi_lpse_routing_binding, lookup_lpse_route,
+    validate_routing_authority,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +42,81 @@ DEFAULT_SUMMARY = ROOT / "outputs" / "evidence" / "lpse_detail_sample_2026_summa
 DEFAULT_PARSED = PARSED_DIR / "lpse_detail_sample_2026.csv"
 
 SUPPORTED_SOURCE_TYPES = ("tender", "nontender")
+
+
+def _routing_text(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def build_cli_routing_binding(
+    kldi_id: str,
+    sirup_run_directory: Path,
+    *,
+    registry_path: Path = REGISTRY_PATH,
+    registry_metadata_path: Path = DEFAULT_METADATA,
+) -> KldiLpseRoutingBinding:
+    """Build routing authority only from validated SIRUP and registry evidence."""
+    canonical_kldi_id = _routing_text(kldi_id)
+    if not canonical_kldi_id:
+        raise ValueError("Routing KLDI identifier must be non-empty")
+    sirup_result = acquire_validated_sirup(sirup_run_directory)
+    matching = tuple(row for row in sirup_result.candidates if _routing_text(row.id_kldi) == canonical_kldi_id)
+    names = {_routing_text(row.kldi_name) for row in matching if _routing_text(row.kldi_name)}
+    if not matching:
+        raise ValueError(f"Validated SIRUP evidence has no row for KLDI {canonical_kldi_id}")
+    if len(names) != 1:
+        raise ValueError(f"Validated SIRUP evidence is ambiguous for KLDI {canonical_kldi_id}")
+
+    metadata = load_registry_artifact_metadata(registry_path, registry_metadata_path)
+    registry = pd.read_csv(registry_path)
+    registry_evidence = tuple(
+        LpseRegistryEvidence(
+            lpse_name=_routing_text(row.get("nama_lpse")),
+            official_lpse_url=_routing_text(row.get("official_lpse_url")),
+            registry_artifact_id=metadata["registry_artifact_id"],
+            registry_artifact_hash=metadata["registry_artifact_hash"],
+            registry_version=metadata["registry_version"],
+            province=_routing_text(row.get("provinsi")),
+            government_level=_routing_text(row.get("kategori_instansi")),
+        )
+        for row in registry.to_dict(orient="records")
+    )
+    provenance = sirup_result.provenance
+    observed_date = _routing_text(provenance.observed_at)[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", observed_date):
+        raise ValueError("Validated SIRUP evidence has no usable observation date")
+    source_version = f"sirup-authenticated-{observed_date}"
+    sirup_evidence = SirupRoutingEvidence(
+        canonical_kldi_id=canonical_kldi_id,
+        source_kldi_name=next(iter(names)),
+        acquisition_run_id=_routing_text(provenance.acquisition_id),
+        receipt_chain_reference=f"receipt-chain:{_routing_text(provenance.acquisition_id)}",
+        receipt_chain_hash=_routing_text(provenance.raw_receipt_id),
+        source_version=source_version,
+    )
+    binding = build_kldi_lpse_routing_binding(sirup_evidence, registry_evidence)
+    binding = validate_routing_authority(
+        binding, sirup_source_version=source_version,
+        registry_version=metadata["registry_version"],
+    )
+    if binding.status is not KldiLpseRoutingStatus.ROUTING_ACTIVE:
+        reasons = ", ".join(binding.rejection_reasons) or binding.status.value
+        raise ValueError(f"Canonical routing authority is not active: {reasons}")
+    return binding
+
+
+def routing_binding_from_args(args: argparse.Namespace) -> KldiLpseRoutingBinding | None:
+    kldi_id = getattr(args, "routing_kldi_id", None)
+    run_directory = getattr(args, "sirup_run_directory", None)
+    if not kldi_id:
+        if run_directory is not None:
+            raise ValueError("--sirup-run-directory requires --routing-kldi-id")
+        return None
+    if run_directory is None:
+        raise ValueError("--routing-kldi-id requires --sirup-run-directory")
+    return build_cli_routing_binding(kldi_id, run_directory)
 DETAIL_LABELS = {
     "kode_tender": "package_code",
     "kode_paket": "package_code",
@@ -773,6 +859,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Workbook output path.")
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY, help="Summary JSON path.")
     parser.add_argument("--parsed-csv", type=Path, default=DEFAULT_PARSED, help="Parsed CSV output path.")
+    parser.add_argument("--routing-kldi-id", help="Exact canonical KLDI identifier whose validated SIRUP evidence authorizes one LPSE route.")
+    parser.add_argument("--sirup-run-directory", type=Path, help="Validated canonical SIRUP run directory used only when --routing-kldi-id is set.")
     parser.add_argument(
         "--national-sample",
         type=Path,
@@ -784,7 +872,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    rows, summary = collect(args)
+    routing_binding = routing_binding_from_args(args)
+    rows, summary = collect(args, routing_binding)
     write_csv(args.parsed_csv, rows)
     save_text(args.summary, json.dumps(summary, indent=2, ensure_ascii=False))
     write_excel(args.output, rows, summary)
