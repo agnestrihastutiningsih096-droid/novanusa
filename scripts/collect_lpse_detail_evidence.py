@@ -595,6 +595,7 @@ def collect_package_detail(
     sleep_seconds: float,
     collected_at: str,
     source_artifacts: dict[str, Any],
+    raw_root: Path = RAW_DIR,
 ) -> dict[str, Any]:
     lpse_name = clean(registry_row.get("nama_lpse", ""))
     lpse_url = clean(registry_row.get("official_lpse_url", ""))
@@ -604,7 +605,7 @@ def collect_package_detail(
     package_name = clean(package_row.get("package_name", ""))
     detail_path = "pengumumanlelang" if source_type == "tender" else "pengumumanpl"
     detail_url = f"{base_url}/{source_type}/{package_code}/{detail_path}"
-    package_dir = RAW_DIR / safe_filename(slug or lpse_name) / str(year) / source_type / safe_filename(package_code)
+    package_dir = raw_root / safe_filename(slug or lpse_name) / str(year) / source_type / safe_filename(package_code)
     package_dir.mkdir(parents=True, exist_ok=True)
     raw_detail_path = package_dir / "detail.html"
     raw_schedule_path = package_dir / "schedule.html"
@@ -755,7 +756,7 @@ def collect(
         for source_type in SUPPORTED_SOURCE_TYPES:
             if len(rows) >= args.limit_packages:
                 break
-            source_dir = RAW_DIR / safe_filename(slug) / str(args.year) / source_type / "_source"
+            source_dir = args.raw_root / safe_filename(slug) / str(args.year) / source_type / "_source"
             source_dir.mkdir(parents=True, exist_ok=True)
             list_url = f"{base_url}/{source_type}?tahun={args.year}"
             try:
@@ -800,6 +801,7 @@ def collect(
                         sleep_seconds=args.sleep,
                         collected_at=collected_at,
                         source_artifacts=source_artifacts,
+                        raw_root=args.raw_root,
                     )
                     rows.append(row)
                     source_counts[source_type] = source_counts.get(source_type, 0) + 1
@@ -897,6 +899,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Workbook output path.")
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY, help="Summary JSON path.")
     parser.add_argument("--parsed-csv", type=Path, default=DEFAULT_PARSED, help="Parsed CSV output path.")
+    parser.add_argument("--raw-root", type=Path, default=RAW_DIR, help="Raw LPSE evidence root; defaults to legacy RAW_DIR.")
     parser.add_argument("--routing-kldi-id", help="Exact canonical KLDI identifier whose validated SIRUP evidence authorizes one LPSE route.")
     parser.add_argument("--sirup-run-directory", type=Path, help="Validated canonical SIRUP run directory used only when --routing-kldi-id is set.")
     parser.add_argument(

@@ -384,5 +384,30 @@ class CliRoutingBindingTests(unittest.TestCase):
                 routing_binding_from_args(args)
 
 
+class RawRootIsolationTests(unittest.TestCase):
+    def test_parse_args_raw_root_default_and_custom(self) -> None:
+        from scripts.collect_lpse_detail_evidence import RAW_DIR, parse_args
+
+        with patch("sys.argv", ["collect_lpse_detail_evidence.py"]):
+            args = parse_args()
+
+        self.assertEqual(RAW_DIR, args.raw_root)
+
+        custom = Path("data/evidence/lpse/bounded/test-task")
+
+        with patch(
+            "sys.argv",
+            [
+                "collect_lpse_detail_evidence.py",
+                "--raw-root",
+                str(custom),
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(custom, args.raw_root)
+
+
+
 if __name__ == "__main__":
     unittest.main()
