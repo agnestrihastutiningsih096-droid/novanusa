@@ -105,7 +105,7 @@ def acquire(run_directory: str | Path, *, limit: int | None = None) -> Acquisiti
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise CurrentRupSirupAdapterError("row budget is not Decimal-compatible") from exc
         candidates.append(RawCurrentRupCandidate(
-            planned_procurement_id=str(row[0]), source_rup_id=str(row[1]),
+            planned_procurement_id=str(row[0]), source_rup_id=str(row[0]),
             id_satker=str(row[2]), id_kldi=row[3], institution_name=row[4],
             kldi_name=row[5], package_title=row[6], budget=budget,
             procurement_type=row[8], procurement_method=row[9],

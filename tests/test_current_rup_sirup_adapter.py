@@ -75,7 +75,7 @@ class CurrentRupSirupAdapterTests(unittest.TestCase):
         result = adapter.acquire(self.run)
         self.assertEqual(["10", "20"], [row.planned_procurement_id for row in result.candidates])
         row = result.candidates[1]
-        self.assertEqual(("ref-20", "9001", "  K-02  "), (row.source_rup_id, row.id_satker, row.id_kldi))
+        self.assertEqual(("20", "9001", "  K-02  "), (row.source_rup_id, row.id_satker, row.id_kldi))
         self.assertEqual(("Unit B", "KLDI B", "Package B"), (row.institution_name, row.kldi_name, row.package_title))
         self.assertEqual((Decimal("12.5"), "Barang", "Tender", "March", "Jakarta", 2026), (row.budget, row.procurement_type, row.procurement_method, row.selection_period, row.location, row.source_year))
 
