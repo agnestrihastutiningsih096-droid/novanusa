@@ -139,11 +139,16 @@ KEYWORD_SECTIONS = {
     "contract": ("kontrak",),
     "document_links": ("dokumen", "lampiran", "download"),
 }
+# Exact labeled-field key for the Kode RUP column found in the detail page's
+# nested "Rencana Umum Pengadaan" table.  The extracted value is raw evidence
+# text only; it is not a procurement realization or verification authority.
+KODE_RUP_HEADER = "kode_rup"
 OUTPUT_COLUMNS = [
     "lpse_name",
     "lpse_url",
     "source_type",
     "package_code",
+    "kode_rup",
     "package_name",
     "institution_name",
     "satker",
@@ -446,9 +451,40 @@ def rows_to_pairs(table: ParsedTable) -> list[tuple[str, str]]:
     return pairs
 
 
+def parse_kode_rup(tables: list[ParsedTable]) -> str:
+    """Extract the exact Kode RUP value from the detail page's nested table.
+
+    Looks for a column whose header normalizes to ``kode_rup`` and reads the
+    exact cell value from the first data row of that table.  The value is
+    preserved as raw evidence text.  Absent/blank values produce an empty
+    string; multiple distinct values fail closed instead of silently choosing
+    one.
+    """
+    observed: list[str] = []
+    for table in tables:
+        index = next(
+            (idx for idx, header in enumerate(table.headers) if normalize_header(header) == KODE_RUP_HEADER),
+            None,
+        )
+        if index is None:
+            continue
+        for row in table.rows:
+            if index < len(row):
+                value = clean(row[index])
+                if value:
+                    observed.append(value)
+    if not observed:
+        return ""
+    distinct = sorted(set(observed))
+    if len(distinct) > 1:
+        raise ValueError(f"ambiguous Kode RUP evidence: {distinct}")
+    return distinct[0]
+
+
 def parse_detail_fields(html: str, page_url: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for table in extract_tables(html):
+    tables = extract_tables(html)
+    for table in tables:
         for label, value in rows_to_pairs(table):
             key = normalize_header(label)
             mapped = DETAIL_LABELS.get(key)
@@ -461,6 +497,7 @@ def parse_detail_fields(html: str, page_url: str) -> dict[str, str]:
     fields.setdefault("stage_or_status", "")
     fields.setdefault("method", "")
     fields.setdefault("fiscal_year", "")
+    fields["kode_rup"] = parse_kode_rup(tables)
     fields["detail_page_url"] = page_url
     return fields
 
@@ -661,6 +698,7 @@ def collect_package_detail(
         "lpse_url": lpse_url,
         "source_type": source_type,
         "package_code": clean(detail_fields.get("package_code") or package_code),
+        "kode_rup": clean(detail_fields.get("kode_rup", "")),
         "package_name": clean(detail_fields.get("package_name") or package_name),
         "institution_name": clean(detail_fields.get("institution_name") or package_row.get("institution_name", "")),
         "satker": clean(detail_fields.get("satker", "")),

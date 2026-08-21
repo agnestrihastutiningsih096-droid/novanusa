@@ -13,6 +13,7 @@ from scripts.collect_lpse_detail_evidence import (
     extract_tables,
     main,
     parse_detail_fields,
+    parse_kode_rup,
     routing_binding_from_args,
     select_registry_rows,
 )
@@ -63,6 +64,153 @@ class HTMLTableParserTests(unittest.TestCase):
         self.assertEqual(fields["stage_or_status"], "Paket Sudah Selesai")
         self.assertEqual(fields["method"], "Penunjukan Langsung")
         self.assertIn("satker", OUTPUT_COLUMNS)
+
+
+class KodeRupExtractionTests(unittest.TestCase):
+    LIVE_KODE_RUP = "61958830"
+    # Minimal deterministic HTML mirroring the known live evidence structure:
+    # a nested "Rencana Umum Pengadaan" table whose columns are
+    # "Kode RUP" / "Nama Paket" / "Sumber Dana".
+    RUP_HTML = """
+    <table>
+      <tr><th>Kode Paket</th><td>10778419000</td></tr>
+      <tr>
+        <th>Rencana Umum Pengadaan</th>
+        <td>
+          <table>
+            <tr><th>Kode RUP</th><th>Nama Paket</th><th>Sumber Dana</th></tr>
+            <tr><td>61958830</td><td>Perencanaan Irigasi</td><td>APBD</td></tr>
+          </table>
+        </td>
+      </tr>
+      <tr><th>Tahap Paket Saat Ini</th><td>Paket Sudah Selesai</td></tr>
+      <tr><th>K/L/PD/Instansi Lainnya</th><td>Kab. Kolaka Utara</td></tr>
+      <tr><th>Metode Pengadaan</th><td>Pengadaan Langsung</td></tr>
+    </table>
+    """
+
+    def test_exact_label_extracts_exact_value(self):
+        tables = extract_tables(self.RUP_HTML)
+        self.assertEqual(self.LIVE_KODE_RUP, parse_kode_rup(tables))
+
+    def test_parse_detail_fields_exposes_kode_rup(self):
+        fields = parse_detail_fields(self.RUP_HTML, "https://example.test/detail")
+        self.assertEqual(self.LIVE_KODE_RUP, fields["kode_rup"])
+
+    def test_absent_kode_rup_yields_empty(self):
+        html = "<table><tr><th>Kode Paket</th><td>1</td></tr></table>"
+        self.assertEqual("", parse_kode_rup(extract_tables(html)))
+
+    def test_blank_kode_rup_yields_empty(self):
+        html = """
+        <table>
+          <tr><th>Kode RUP</th><th>Nama Paket</th></tr>
+          <tr><td>   </td><td>Contoh</td></tr>
+        </table>
+        """
+        self.assertEqual("", parse_kode_rup(extract_tables(html)))
+
+    def test_nested_tables_do_not_erase_kode_rup(self):
+        # Same as RUP_HTML: the Kode RUP value lives in a nested table.
+        fields = parse_detail_fields(self.RUP_HTML, "https://example.test/detail")
+        self.assertEqual(self.LIVE_KODE_RUP, fields["kode_rup"])
+        self.assertEqual("Paket Sudah Selesai", fields["stage_or_status"])
+
+    def test_unrelated_numeric_values_not_mistaken_for_kode_rup(self):
+        html = """
+        <table>
+          <tr><th>Kode Paket</th><td>10778419000</td></tr>
+          <tr><th>Nilai HPS</th><td>35000000</td></tr>
+          <tr><th>Uraian</th><td>12345</td></tr>
+        </table>
+        """
+        self.assertEqual("", parse_kode_rup(extract_tables(html)))
+
+    def test_package_code_never_substituted_for_kode_rup(self):
+        html = """
+        <table>
+          <tr><th>Kode Paket</th><td>10778419000</td></tr>
+        </table>
+        """
+        fields = parse_detail_fields(html, "https://example.test/detail")
+        # The parser treats the first row as column headers, so the label/value
+        # row is not a data row; kode_rup must still be empty and must never be
+        # filled from any package-code-like value.
+        self.assertEqual("", fields["kode_rup"])
+
+    def test_repeated_parsing_is_deterministic(self):
+        first = parse_detail_fields(self.RUP_HTML, "https://example.test/detail")
+        for _ in range(25):
+            self.assertEqual(first, parse_detail_fields(self.RUP_HTML, "https://example.test/detail"))
+
+    def test_existing_detail_fields_remain_unchanged(self):
+        fields = parse_detail_fields(self.RUP_HTML, "https://example.test/detail")
+        # Existing data-row label/value fields are unchanged by kode_rup extraction.
+        # (Columnar nested-table rows are not label/value pairs, so package_name
+        # stays empty in this fixture exactly as before the change.)
+        self.assertEqual("", fields["package_name"])
+        self.assertEqual("Kab. Kolaka Utara", fields["institution_name"])
+        self.assertEqual("Paket Sudah Selesai", fields["stage_or_status"])
+        self.assertEqual("Pengadaan Langsung", fields["method"])
+        self.assertEqual("61958830", fields["kode_rup"])
+
+    def test_output_columns_exposes_kode_rup_exactly_once(self):
+        self.assertEqual(1, OUTPUT_COLUMNS.count("kode_rup"))
+
+    def test_ambiguous_kode_rup_fails_closed(self):
+        html = """
+        <table>
+          <tr><th>Kode RUP</th><th>Nama Paket</th></tr>
+          <tr><td>11111111</td><td>A</td></tr>
+          <tr><td>22222222</td><td>B</td></tr>
+        </table>
+        """
+        with self.assertRaises(ValueError):
+            parse_kode_rup(extract_tables(html))
+
+    def test_duplicate_identical_kode_rup_is_not_ambiguous(self):
+        html = """
+        <table>
+          <tr><th>Kode RUP</th><th>Nama Paket</th></tr>
+          <tr><td>61958830</td><td>A</td></tr>
+          <tr><td>61958830</td><td>B</td></tr>
+        </table>
+        """
+        self.assertEqual("61958830", parse_kode_rup(extract_tables(html)))
+
+    def test_live_evidence_fixture_extracts_known_value(self):
+        # Read-only use of the known live evidence file (no network).
+        from pathlib import Path
+
+        live = Path(__file__).resolve().parents[1] / "data" / "evidence" / "lpse" / "raw" / "kolutkab" / "2026" / "nontender" / "10778419000" / "detail.html"
+        if not live.exists():
+            self.skipTest("live evidence fixture not present")
+        fields = parse_detail_fields(live.read_text(encoding="utf-8"), "https://example.test/detail")
+        self.assertEqual("61958830", fields["kode_rup"])
+
+    def test_extraction_uses_no_network_credentials_db_or_authority(self):
+        import os as _os
+        import socket as _socket
+        from unittest import mock as _mock
+
+        import scripts.current_procurement_contracts as contracts
+
+        with (
+            _mock.patch.object(_socket, "socket", side_effect=AssertionError("socket used")),
+            _mock.patch("urllib.request.urlopen", side_effect=AssertionError("urlopen used")),
+            _mock.patch.dict(_os.environ, {}, clear=True),
+            _mock.patch("duckdb.connect", side_effect=AssertionError("duckdb used")),
+            _mock.patch.object(contracts.ProcurementDecisionStore, "append", side_effect=AssertionError("decision append used")),
+            _mock.patch.object(contracts, "verify_realization_link", side_effect=AssertionError("verify_realization_link called")),
+            _mock.patch.object(contracts, "validate_execution", side_effect=AssertionError("validate_execution called")),
+            _mock.patch.object(contracts, "promote_observed_execution", side_effect=AssertionError("promote_observed_execution called")),
+            _mock.patch.object(contracts, "validate_compatibility", side_effect=AssertionError("validate_compatibility called")),
+            _mock.patch.object(contracts, "promote_supplier_compatibility", side_effect=AssertionError("promote_supplier_compatibility called")),
+            _mock.patch.object(contracts, "evaluate_outreach_eligibility", side_effect=AssertionError("evaluate_outreach_eligibility called")),
+            _mock.patch.object(contracts, "_persist_decision", side_effect=AssertionError("_persist_decision called")),
+        ):
+            fields = parse_detail_fields(self.RUP_HTML, "https://example.test/detail")
+            self.assertEqual("61958830", fields["kode_rup"])
 
 
 class RoutingSelectionTests(unittest.TestCase):
