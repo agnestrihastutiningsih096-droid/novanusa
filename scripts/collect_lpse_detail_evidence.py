@@ -727,6 +727,9 @@ def collect(
     args: argparse.Namespace,
     routing_binding: KldiLpseRoutingBinding | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not args.raw_root.is_absolute():
+        args.raw_root = ROOT / args.raw_root
+
     registry = pd.read_csv(REGISTRY_PATH)
     if args.national_sample and args.national_sample.exists():
         sample_context = pd.read_csv(args.national_sample)

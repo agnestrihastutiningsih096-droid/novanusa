@@ -409,5 +409,56 @@ class RawRootIsolationTests(unittest.TestCase):
 
 
 
+    def test_collect_normalizes_relative_raw_root_against_repository_root(self) -> None:
+        from scripts.collect_lpse_detail_evidence import ROOT, collect
+
+        relative = Path("data/evidence/lpse/bounded/test-relative")
+
+        args = SimpleNamespace(
+            raw_root=relative,
+            national_sample=None,
+            limit_lpse=0,
+            limit_packages=0,
+            year=2026,
+            sleep=0,
+            timeout=30,
+        )
+
+        with (
+            patch("scripts.collect_lpse_detail_evidence.pd.read_csv", return_value=pd.DataFrame()),
+            patch("scripts.collect_lpse_detail_evidence.select_registry_rows", return_value=[]),
+            patch("scripts.collect_lpse_detail_evidence.make_opener", return_value=object()),
+        ):
+            collect(args)
+
+        self.assertTrue(args.raw_root.is_absolute())
+        self.assertEqual(ROOT / relative, args.raw_root)
+
+    def test_collect_preserves_absolute_raw_root(self) -> None:
+        from scripts.collect_lpse_detail_evidence import ROOT, collect
+
+        absolute = ROOT / "data" / "evidence" / "lpse" / "bounded" / "test-absolute"
+
+        args = SimpleNamespace(
+            raw_root=absolute,
+            national_sample=None,
+            limit_lpse=0,
+            limit_packages=0,
+            year=2026,
+            sleep=0,
+            timeout=30,
+        )
+
+        with (
+            patch("scripts.collect_lpse_detail_evidence.pd.read_csv", return_value=pd.DataFrame()),
+            patch("scripts.collect_lpse_detail_evidence.select_registry_rows", return_value=[]),
+            patch("scripts.collect_lpse_detail_evidence.make_opener", return_value=object()),
+        ):
+            collect(args)
+
+        self.assertEqual(absolute, args.raw_root)
+
+
+
 if __name__ == "__main__":
     unittest.main()
