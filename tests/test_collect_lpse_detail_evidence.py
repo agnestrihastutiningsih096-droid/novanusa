@@ -1,4 +1,5 @@
 import argparse
+import json
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -8,12 +9,14 @@ from unittest.mock import patch
 import pandas as pd
 
 from scripts.collect_lpse_detail_evidence import (
+    KODE_RUP_ROWS_FIELD,
     OUTPUT_COLUMNS,
     build_cli_routing_binding,
     extract_tables,
     main,
     parse_detail_fields,
     parse_kode_rup,
+    parse_kode_rup_rows,
     routing_binding_from_args,
     select_registry_rows,
 )
@@ -80,6 +83,46 @@ class KodeRupExtractionTests(unittest.TestCase):
           <table>
             <tr><th>Kode RUP</th><th>Nama Paket</th><th>Sumber Dana</th></tr>
             <tr><td>61958830</td><td>Perencanaan Irigasi</td><td>APBD</td></tr>
+          </table>
+        </td>
+      </tr>
+      <tr><th>Tahap Paket Saat Ini</th><td>Paket Sudah Selesai</td></tr>
+      <tr><th>K/L/PD/Instansi Lainnya</th><td>Kab. Kolaka Utara</td></tr>
+      <tr><th>Metode Pengadaan</th><td>Pengadaan Langsung</td></tr>
+    </table>
+    """
+
+    # Live-evidence oracle: SPSE package 10779939000 carries one structurally
+    # valid "Kode RUP / Nama Paket / Sumber Dana" table with eight legitimate
+    # rows, each with a distinct Kode RUP.  These are the exact observed
+    # values; the fixture is deliberately minimal and deterministic.
+    MULTI_RUP_VALUES = (
+        "62901746",
+        "62901807",
+        "62902048",
+        "62902243",
+        "62902871",
+        "62902964",
+        "62932289",
+        "62933447",
+    )
+    TARGET_ABSENT_RUP = "67676293"
+    MULTI_RUP_HTML = """
+    <table>
+      <tr><th>Kode Paket</th><td>10779939000</td></tr>
+      <tr>
+        <th>Rencana Umum Pengadaan</th>
+        <td>
+          <table>
+            <tr><th>Kode RUP</th><th>Nama Paket</th><th>Sumber Dana</th></tr>
+            <tr><td>62901746</td><td>Perencanaan Pembangunan Turap/Bronjong Desa Tinukari Kec.Wawo</td><td>APBD</td></tr>
+            <tr><td>62901807</td><td>Perencanaan Pembangunan Turap/Bronjong Desa Latawaro Kec.Lambai</td><td>APBD</td></tr>
+            <tr><td>62902048</td><td>Perencanaan Pemasangan Perkuatan Tebing Sungai Desa Ngapa Kec. Ngapa</td><td>APBD</td></tr>
+            <tr><td>62902243</td><td>Perencanaan Pemasangan bronjong/perkuatan Tebing sungai Majapahit Kec. Pakue Tengah</td><td>APBD</td></tr>
+            <tr><td>62902871</td><td>Perencanaan Pemasangan bronjong/perkuatan Tebing sungai Tahibua Kec. Tiwu</td><td>APBD</td></tr>
+            <tr><td>62902964</td><td>Perencanaan Tanggul Sungai Mataiwoi Kec. Ngapa</td><td>APBD</td></tr>
+            <tr><td>62932289</td><td>Perencanaan Pembangunan Turap/Bronjong Desa Labipi Kec.Pakue Tengah</td><td>APBD</td></tr>
+            <tr><td>62933447</td><td>Perencanaan Perkuatan  Tebing Sungai Desa Tanggaruru Kec.Porehu</td><td>APBD</td></tr>
           </table>
         </td>
       </tr>
@@ -157,7 +200,7 @@ class KodeRupExtractionTests(unittest.TestCase):
     def test_output_columns_exposes_kode_rup_exactly_once(self):
         self.assertEqual(1, OUTPUT_COLUMNS.count("kode_rup"))
 
-    def test_ambiguous_kode_rup_fails_closed(self):
+    def test_ambiguous_kode_rup_never_selects_arbitrarily(self):
         html = """
         <table>
           <tr><th>Kode RUP</th><th>Nama Paket</th></tr>
@@ -165,8 +208,77 @@ class KodeRupExtractionTests(unittest.TestCase):
           <tr><td>22222222</td><td>B</td></tr>
         </table>
         """
-        with self.assertRaises(ValueError):
-            parse_kode_rup(extract_tables(html))
+        # Multiple distinct Kode RUP values must never raise and must never
+        # cause one value to be silently chosen for the scalar field.
+        self.assertEqual("", parse_kode_rup(extract_tables(html)))
+
+    def test_ambiguous_kode_rup_rows_are_still_preserved(self):
+        html = """
+        <table>
+          <tr><th>Kode RUP</th><th>Nama Paket</th></tr>
+          <tr><td>11111111</td><td>A</td></tr>
+          <tr><td>22222222</td><td>B</td></tr>
+        </table>
+        """
+        rows = parse_kode_rup_rows(extract_tables(html))
+        self.assertEqual(
+            [{"kode_rup": "11111111", "nama_paket": "A"}, {"kode_rup": "22222222", "nama_paket": "B"}],
+            rows,
+        )
+
+    def test_live_eight_rup_scalar_is_empty_and_rows_are_preserved(self):
+        tables = extract_tables(self.MULTI_RUP_HTML)
+        # No single value may be selected for the scalar field.
+        self.assertEqual("", parse_kode_rup(tables))
+        rows = parse_kode_rup_rows(tables)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(sorted(self.MULTI_RUP_VALUES), sorted(row["kode_rup"] for row in rows))
+
+    def test_live_eight_rup_rows_preserve_exact_values(self):
+        rows = parse_kode_rup_rows(extract_tables(self.MULTI_RUP_HTML))
+        self.assertEqual(self.MULTI_RUP_VALUES, tuple(row["kode_rup"] for row in rows))
+
+    def test_live_eight_rup_rows_preserve_nama_paket(self):
+        rows = parse_kode_rup_rows(extract_tables(self.MULTI_RUP_HTML))
+        expected = {
+            "62901746": "Perencanaan Pembangunan Turap/Bronjong Desa Tinukari Kec.Wawo",
+            "62901807": "Perencanaan Pembangunan Turap/Bronjong Desa Latawaro Kec.Lambai",
+            "62902048": "Perencanaan Pemasangan Perkuatan Tebing Sungai Desa Ngapa Kec. Ngapa",
+            "62902243": "Perencanaan Pemasangan bronjong/perkuatan Tebing sungai Majapahit Kec. Pakue Tengah",
+            "62902871": "Perencanaan Pemasangan bronjong/perkuatan Tebing sungai Tahibua Kec. Tiwu",
+            "62902964": "Perencanaan Tanggul Sungai Mataiwoi Kec. Ngapa",
+            "62932289": "Perencanaan Pembangunan Turap/Bronjong Desa Labipi Kec.Pakue Tengah",
+            "62933447": "Perencanaan Perkuatan Tebing Sungai Desa Tanggaruru Kec.Porehu",
+        }
+        by_rup = {row["kode_rup"]: row["nama_paket"] for row in rows}
+        self.assertEqual(expected, by_rup)
+
+    def test_live_eight_rup_rows_preserve_sumber_dana(self):
+        rows = parse_kode_rup_rows(extract_tables(self.MULTI_RUP_HTML))
+        self.assertTrue(rows)
+        self.assertTrue(all(row["sumber_dana"] == "APBD" for row in rows))
+
+    def test_live_eight_rup_parse_detail_fields_carries_row_aware_evidence(self):
+        fields = parse_detail_fields(self.MULTI_RUP_HTML, "https://example.test/detail")
+        self.assertEqual("", fields["kode_rup"])
+        rows = json.loads(fields[KODE_RUP_ROWS_FIELD])
+        self.assertEqual(8, len(rows))
+        self.assertEqual(self.MULTI_RUP_VALUES, tuple(row["kode_rup"] for row in rows))
+
+    def test_live_eight_rup_target_absent_from_preserved_evidence(self):
+        tables = extract_tables(self.MULTI_RUP_HTML)
+        rows = parse_kode_rup_rows(tables)
+        values = {row["kode_rup"] for row in rows}
+        self.assertNotIn(self.TARGET_ABSENT_RUP, values)
+        self.assertEqual("", parse_kode_rup(tables))
+        # The target must remain not proven: no scalar value and no row holds it.
+        fields = parse_detail_fields(self.MULTI_RUP_HTML, "https://example.test/detail")
+        self.assertNotIn(self.TARGET_ABSENT_RUP, fields["kode_rup"])
+        self.assertNotIn(self.TARGET_ABSENT_RUP, fields[KODE_RUP_ROWS_FIELD])
+
+    def test_output_columns_exposes_kode_rup_rows(self):
+        self.assertEqual(1, OUTPUT_COLUMNS.count("kode_rup"))
+        self.assertEqual(1, OUTPUT_COLUMNS.count(KODE_RUP_ROWS_FIELD))
 
     def test_duplicate_identical_kode_rup_is_not_ambiguous(self):
         html = """

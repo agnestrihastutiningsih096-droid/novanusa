@@ -143,12 +143,18 @@ KEYWORD_SECTIONS = {
 # nested "Rencana Umum Pengadaan" table.  The extracted value is raw evidence
 # text only; it is not a procurement realization or verification authority.
 KODE_RUP_HEADER = "kode_rup"
+# Row-aware Kode RUP evidence (kode_rup / nama_paket / sumber_dana) preserved
+# as JSON.  A single execution may legitimately reference multiple distinct
+# RUP values; the scalar kode_rup column stays empty in that case while these
+# rows retain the full structured evidence.
+KODE_RUP_ROWS_FIELD = "kode_rup_rows"
 OUTPUT_COLUMNS = [
     "lpse_name",
     "lpse_url",
     "source_type",
     "package_code",
     "kode_rup",
+    KODE_RUP_ROWS_FIELD,
     "package_name",
     "institution_name",
     "satker",
@@ -457,9 +463,61 @@ def parse_kode_rup(tables: list[ParsedTable]) -> str:
     Looks for a column whose header normalizes to ``kode_rup`` and reads the
     exact cell value from the first data row of that table.  The value is
     preserved as raw evidence text.  Absent/blank values produce an empty
-    string; multiple distinct values fail closed instead of silently choosing
-    one.
+    string.  When the page carries one distinct nonblank Kode RUP value that
+    exact value is returned; multiple distinct values yield an empty string
+    because no single value can represent the page without arbitrarily
+    selecting one.  Use ``parse_kode_rup_rows`` for row-aware multi-RUP
+    evidence.
     """
+    distinct = {value for value in observed_kode_rup_values(tables)}
+    if len(distinct) != 1:
+        return ""
+    return next(iter(distinct))
+
+
+def parse_kode_rup_rows(tables: list[ParsedTable]) -> list[dict[str, str]]:
+    """Preserve every Kode RUP evidence row from the detail page.
+
+    Each row of a table with a ``kode_rup`` column is kept as a dict with
+    ``kode_rup`` plus any ``nama_paket`` and ``sumber_dana`` columns present
+    in that table, using the exact raw cell values.  Blank cells are retained
+    as empty strings.  Rows whose Kode RUP value is blank are omitted because
+    they carry no Kode RUP evidence.  This is raw evidence only; it is not a
+    procurement realization or verification authority.
+    """
+    rows: list[dict[str, str]] = []
+    for table in tables:
+        rup_index = next(
+            (idx for idx, header in enumerate(table.headers) if normalize_header(header) == KODE_RUP_HEADER),
+            None,
+        )
+        if rup_index is None:
+            continue
+        nama_index = next(
+            (idx for idx, header in enumerate(table.headers) if normalize_header(header) in {"nama_paket", "nama_tender"}),
+            None,
+        )
+        dana_index = next(
+            (idx for idx, header in enumerate(table.headers) if normalize_header(header) in {"sumber_dana", "sumber_dana_apbd"}),
+            None,
+        )
+        for row in table.rows:
+            if rup_index >= len(row):
+                continue
+            value = clean(row[rup_index])
+            if not value:
+                continue
+            record = {"kode_rup": value}
+            if nama_index is not None and nama_index < len(row):
+                record["nama_paket"] = clean(row[nama_index])
+            if dana_index is not None and dana_index < len(row):
+                record["sumber_dana"] = clean(row[dana_index])
+            rows.append(record)
+    return rows
+
+
+def observed_kode_rup_values(tables: list[ParsedTable]) -> list[str]:
+    """All nonblank Kode RUP cell values across the detail page tables."""
     observed: list[str] = []
     for table in tables:
         index = next(
@@ -473,12 +531,7 @@ def parse_kode_rup(tables: list[ParsedTable]) -> str:
                 value = clean(row[index])
                 if value:
                     observed.append(value)
-    if not observed:
-        return ""
-    distinct = sorted(set(observed))
-    if len(distinct) > 1:
-        raise ValueError(f"ambiguous Kode RUP evidence: {distinct}")
-    return distinct[0]
+    return observed
 
 
 def parse_detail_fields(html: str, page_url: str) -> dict[str, str]:
@@ -498,6 +551,7 @@ def parse_detail_fields(html: str, page_url: str) -> dict[str, str]:
     fields.setdefault("method", "")
     fields.setdefault("fiscal_year", "")
     fields["kode_rup"] = parse_kode_rup(tables)
+    fields[KODE_RUP_ROWS_FIELD] = json.dumps(parse_kode_rup_rows(tables), ensure_ascii=False)
     fields["detail_page_url"] = page_url
     return fields
 
@@ -700,6 +754,7 @@ def collect_package_detail(
         "source_type": source_type,
         "package_code": clean(detail_fields.get("package_code") or package_code),
         "kode_rup": clean(detail_fields.get("kode_rup", "")),
+        KODE_RUP_ROWS_FIELD: detail_fields.get(KODE_RUP_ROWS_FIELD, "[]"),
         "package_name": clean(detail_fields.get("package_name") or package_name),
         "institution_name": clean(detail_fields.get("institution_name") or package_row.get("institution_name", "")),
         "satker": clean(detail_fields.get("satker", "")),
