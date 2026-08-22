@@ -42,6 +42,7 @@ DEFAULT_SUMMARY = ROOT / "outputs" / "evidence" / "lpse_detail_sample_2026_summa
 DEFAULT_PARSED = PARSED_DIR / "lpse_detail_sample_2026.csv"
 
 SUPPORTED_SOURCE_TYPES = ("tender", "nontender")
+DATATABLE_PAGE_SIZE = 100
 
 
 def _routing_text(value: object) -> str:
@@ -391,10 +392,10 @@ def extract_token_and_url(html: str, page_url: str) -> tuple[str, str] | None:
     return urljoin(page_url, url_match.group(1)), token_match.group(1)
 
 
-def datatable_form(limit: int, token: str) -> dict[str, str]:
+def datatable_form(limit: int, token: str, start: int = 0) -> dict[str, str]:
     return {
         "draw": "1",
-        "start": "0",
+        "start": str(max(0, start)),
         "length": str(max(1, limit)),
         "search[value]": "",
         "search[regex]": "false",
@@ -794,6 +795,7 @@ def collect(
     opener = make_opener()
     collected_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     rows: list[dict[str, Any]] = []
+    seen_package_identities: set[tuple[str, ...]] = set()
     source_counts: dict[str, int] = {key: 0 for key in SUPPORTED_SOURCE_TYPES}
     lpse_status: list[dict[str, Any]] = []
 
@@ -826,46 +828,71 @@ def collect(
                     lpse_status.append({"lpse_name": lpse_name, "lpse_url": lpse_url, "source_type": source_type, "status": "no_public_datatable_token"})
                     continue
                 datatable_url, token = token_and_url
-                payload, datatable_meta = post_form(
-                    datatable_url,
-                    referer=list_url,
-                    form=datatable_form(args.limit_packages, token),
-                    timeout=args.timeout,
-                    opener=opener,
-                )
-                datatable_path = source_dir / "datatable.json"
-                save_text(datatable_path, payload)
-                package_rows, datatable_parse_meta = parse_datatable_rows(payload, source_type=source_type, year=args.year, limit=args.limit_packages)
-                source_artifacts = {
-                    "list_url": list_url,
-                    "datatable_url": datatable_url,
-                    "list_path": str(list_path.relative_to(ROOT)),
-                    "datatable_path": str(datatable_path.relative_to(ROOT)),
-                    "list_fetch": list_meta,
-                    "datatable_fetch": datatable_meta,
-                    "datatable_parse": datatable_parse_meta,
-                }
                 collected_any = 0
-                for package_row in package_rows:
-                    if len(rows) >= args.limit_packages:
-                        break
-                    row = collect_package_detail(
-                        registry_row={**registry_row, "base_lpse_url": base_url, "slug": slug},
-                        source_type=source_type,
-                        package_row=package_row,
-                        year=args.year,
-                        opener=opener,
+                start = 0
+                datatable_meta: dict[str, Any] = {}
+                datatable_parse_meta: dict[str, Any] = {}
+                while len(rows) < args.limit_packages:
+                    page_size = min(DATATABLE_PAGE_SIZE, args.limit_packages - len(rows))
+                    payload, datatable_meta = post_form(
+                        datatable_url,
+                        referer=list_url,
+                        form=datatable_form(page_size, token, start=start),
                         timeout=args.timeout,
-                        sleep_seconds=args.sleep,
-                        collected_at=collected_at,
-                        source_artifacts=source_artifacts,
-                        raw_root=args.raw_root,
+                        opener=opener,
                     )
-                    rows.append(row)
-                    source_counts[source_type] = source_counts.get(source_type, 0) + 1
-                    collected_any += 1
-                    if len(rows) >= args.limit_packages:
+                    datatable_path = source_dir / ("datatable.json" if start == 0 else f"datatable_start_{start}.json")
+                    save_text(datatable_path, payload)
+                    package_rows, datatable_parse_meta = parse_datatable_rows(
+                        payload, source_type=source_type, year=args.year, limit=page_size,
+                    )
+                    rows_received = int(datatable_parse_meta["datatable_rows_received"])
+                    if not package_rows:
                         break
+                    source_artifacts = {
+                        "list_url": list_url,
+                        "datatable_url": datatable_url,
+                        "list_path": str(list_path.relative_to(ROOT)),
+                        "datatable_path": str(datatable_path.relative_to(ROOT)),
+                        "list_fetch": list_meta,
+                        "datatable_fetch": datatable_meta,
+                        "datatable_parse": datatable_parse_meta,
+                    }
+                    page_progress = 0
+                    for package_row in package_rows:
+                        package_code = clean(package_row.get("package_code", ""))
+                        package_identity = (("code", package_code) if package_code else (
+                            "row",
+                            clean(package_row.get("package_name", "")),
+                            clean(package_row.get("institution_name", "")),
+                            clean(package_row.get("stage_or_status", "")),
+                            clean(package_row.get("hps_or_pagu", "")),
+                            clean(package_row.get("method", "")),
+                        ))
+                        if package_identity in seen_package_identities:
+                            continue
+                        seen_package_identities.add(package_identity)
+                        row = collect_package_detail(
+                            registry_row={**registry_row, "base_lpse_url": base_url, "slug": slug},
+                            source_type=source_type,
+                            package_row=package_row,
+                            year=args.year,
+                            opener=opener,
+                            timeout=args.timeout,
+                            sleep_seconds=args.sleep,
+                            collected_at=collected_at,
+                            source_artifacts=source_artifacts,
+                            raw_root=args.raw_root,
+                        )
+                        rows.append(row)
+                        source_counts[source_type] = source_counts.get(source_type, 0) + 1
+                        collected_any += 1
+                        page_progress += 1
+                        if len(rows) >= args.limit_packages:
+                            break
+                    if len(rows) >= args.limit_packages or rows_received < page_size or page_progress == 0:
+                        break
+                    start += page_size
                 lpse_status.append({
                     "lpse_name": lpse_name,
                     "lpse_url": lpse_url,
@@ -984,4 +1011,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

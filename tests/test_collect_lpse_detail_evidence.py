@@ -12,6 +12,8 @@ from scripts.collect_lpse_detail_evidence import (
     KODE_RUP_ROWS_FIELD,
     OUTPUT_COLUMNS,
     build_cli_routing_binding,
+    collect,
+    datatable_form,
     extract_tables,
     main,
     parse_detail_fields,
@@ -494,6 +496,83 @@ class CliRoutingBindingTests(unittest.TestCase):
         ):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 routing_binding_from_args(args)
+
+
+class BoundedPaginationTests(unittest.TestCase):
+    def payload(self, *codes: str) -> str:
+        return json.dumps({"recordsTotal": 2147483647, "recordsFiltered": 2147483647, "data": [[code, f"Package {code}"] for code in codes]})
+
+    def run_collect(self, payloads: list[str], limit: int):
+        args = SimpleNamespace(
+            raw_root=Path(__file__).resolve().parents[1] / "data" / "evidence" / "lpse" / "bounded" / "pagination-test",
+            national_sample=None,
+            limit_lpse=1,
+            limit_packages=limit,
+            year=2026,
+            sleep=0,
+            timeout=30,
+        )
+        registry_row = {
+            "base_lpse_url": "https://spse.inaproc.id/example",
+            "slug": "example",
+            "nama_lpse": "Example LPSE",
+            "official_lpse_url": "https://spse.inaproc.id/example",
+        }
+        opener = object()
+        with (
+            patch("scripts.collect_lpse_detail_evidence.DATATABLE_PAGE_SIZE", 2),
+            patch("scripts.collect_lpse_detail_evidence.SUPPORTED_SOURCE_TYPES", ("tender",)),
+            patch("scripts.collect_lpse_detail_evidence.pd.read_csv", return_value=pd.DataFrame([registry_row])),
+            patch("scripts.collect_lpse_detail_evidence.select_registry_rows", return_value=[registry_row]),
+            patch("scripts.collect_lpse_detail_evidence.make_opener", return_value=opener),
+            patch("scripts.collect_lpse_detail_evidence.Path.mkdir"),
+            patch("scripts.collect_lpse_detail_evidence.save_text"),
+            patch("scripts.collect_lpse_detail_evidence.fetch_html", return_value=(
+                "url: '/example/dt/tender'; authenticityToken = 'token'", {"http_status": 200},
+            )),
+            patch("scripts.collect_lpse_detail_evidence.post_form", side_effect=[(payload, {"http_status": 200}) for payload in payloads]) as post,
+            patch("scripts.collect_lpse_detail_evidence.collect_package_detail", side_effect=lambda **kwargs: {
+                "package_code": kwargs["package_row"]["package_code"], "evidence_level": "LPSE_PUBLIC_DETAIL_FOUND",
+            }) as detail,
+        ):
+            rows, summary = collect(args)
+        return rows, summary, opener, post, detail
+
+    def test_form_defaults_to_first_offset_for_compatible_single_page_behavior(self) -> None:
+        self.assertEqual("0", datatable_form(5, "token")["start"])
+        rows, _, _, post, _ = self.run_collect([self.payload("A", "B")], limit=2)
+        self.assertEqual(["A", "B"], [row["package_code"] for row in rows])
+        self.assertEqual(1, post.call_count)
+        self.assertEqual("0", post.call_args.kwargs["form"]["start"])
+
+    def test_offsets_advance_limit_holds_duplicates_are_skipped_and_opener_is_reused(self) -> None:
+        rows, _, opener, post, detail = self.run_collect(
+            [self.payload("A", "A"), self.payload("B", "C")], limit=3,
+        )
+        self.assertEqual(["A", "B", "C"], [row["package_code"] for row in rows])
+        self.assertEqual(3, detail.call_count)
+        self.assertEqual(["0", "2"], [call.kwargs["form"]["start"] for call in post.call_args_list])
+        self.assertEqual(["2", "2"], [call.kwargs["form"]["length"] for call in post.call_args_list])
+        self.assertTrue(all(call.kwargs["opener"] is opener for call in post.call_args_list))
+
+    def test_empty_page_terminates(self) -> None:
+        rows, _, _, post, detail = self.run_collect([self.payload()], limit=5)
+        self.assertEqual([], rows)
+        self.assertEqual(1, post.call_count)
+        detail.assert_not_called()
+
+    def test_short_page_terminates(self) -> None:
+        rows, _, _, post, _ = self.run_collect([self.payload("A")], limit=5)
+        self.assertEqual(["A"], [row["package_code"] for row in rows])
+        self.assertEqual(1, post.call_count)
+
+    def test_repeated_non_progressing_page_terminates_without_duplicate_collection(self) -> None:
+        rows, _, _, post, detail = self.run_collect(
+            [self.payload("A", "B"), self.payload("A")], limit=3,
+        )
+        self.assertEqual(["A", "B"], [row["package_code"] for row in rows])
+        self.assertEqual(2, post.call_count)
+        self.assertEqual(2, detail.call_count)
 
 
 class RawRootIsolationTests(unittest.TestCase):
