@@ -9,10 +9,14 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
+import weakref
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from uuid import uuid4
 
-from validate_sirup_promotion import DEFAULT_COMPARISON_NAME, evaluate
+from validate_sirup_promotion import DEFAULT_COMPARISON_NAME, _evaluate_genesis, evaluate
 
 
 STAGING_DATABASE_NAME = "sirup_staging.duckdb"
@@ -25,6 +29,147 @@ SNAPSHOT_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 class PromotionError(RuntimeError):
     """A fail-closed promotion rejection."""
+
+
+_CAPABILITY_REGISTRY: weakref.WeakKeyDictionary[object, dict[str, Any]] = (
+    weakref.WeakKeyDictionary()
+)
+_CAPABILITY_REGISTRY_LOCK = threading.Lock()
+
+
+class _GenesisCapability:
+    """Opaque handle whose authority exists only in the identity registry."""
+
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, *args: object, **kwargs: object) -> _GenesisCapability:
+        raise TypeError("genesis capabilities can only be created by lock acquisition")
+
+    def __copy__(self) -> object:
+        raise TypeError("genesis capabilities cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> object:
+        raise TypeError("genesis capabilities cannot be deep-copied")
+
+    def __reduce__(self) -> object:
+        raise TypeError("genesis capabilities cannot be serialized")
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        raise TypeError("genesis capabilities cannot be serialized")
+
+    def __getstate__(self) -> object:
+        raise TypeError("genesis capabilities cannot be serialized")
+
+    @property
+    def _fd(self) -> int:
+        return int(_capability_state(self)["fd"])
+
+    @_fd.setter
+    def _fd(self, value: int) -> None:
+        _capability_state(self)["fd"] = value
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"lock_path", "canonical_root", "candidate_path", "run_id", "nonce", "consumed"}:
+            return _capability_state(self)[name]
+        raise AttributeError(name)
+
+    def close(self) -> None:
+        state = _capability_state(self)
+        if state["fd"] < 0:
+            return
+        try:
+            _verify_held_lock(state)
+            same_lock = True
+        except (OSError, RuntimeError):
+            same_lock = False
+        os.close(state["fd"])
+        state["fd"] = -1
+        if same_lock:
+            state["lock_path"].unlink(missing_ok=True)
+
+
+def _capability_state(capability: object) -> dict[str, Any]:
+    with _CAPABILITY_REGISTRY_LOCK:
+        state = _CAPABILITY_REGISTRY.get(capability)
+    if state is None:
+        raise RuntimeError("unregistered genesis capability")
+    return state
+
+
+def _acquire_genesis_capability(lock_path: Path, candidate_path: Path) -> _GenesisCapability:
+    """Acquire the held-FD authority, then register exactly one opaque handle."""
+    lock_path = lock_path.resolve()
+    candidate_path = candidate_path.resolve()
+    run_id = str(uuid4())
+    nonce = uuid4().hex
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    except FileExistsError as exc:
+        raise PromotionError("promotion authority is already held") from exc
+    metadata = {
+            "nonce": nonce,
+            "candidate_path": str(candidate_path),
+            "run_id": run_id,
+            "acquired_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "pid": os.getpid(),
+        }
+    try:
+        os.write(fd, (json.dumps(metadata, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(fd)
+        capability = object.__new__(_GenesisCapability)
+        with _CAPABILITY_REGISTRY_LOCK:
+            _CAPABILITY_REGISTRY[capability] = {
+                "fd": fd, "lock_path": lock_path,
+                "canonical_root": lock_path.parent,
+                "candidate_path": candidate_path, "run_id": run_id,
+                "nonce": nonce, "consumed": False,
+            }
+        return capability
+    except BaseException:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
+        raise
+
+
+def _verify_held_lock(state: dict[str, Any]) -> None:
+    if state["fd"] < 0:
+        raise RuntimeError("genesis promotion lock descriptor is closed")
+    held = os.fstat(state["fd"])
+    current = os.stat(state["lock_path"])
+    if not os.path.samestat(held, current):
+        raise RuntimeError("genesis promotion lock path identity changed")
+
+
+def _validate_and_consume_genesis_capability(
+    capability: object, candidate_path: Path, run_id: str | None,
+    expected_active: str | None,
+) -> bool | None:
+    """Return None for non-authority; otherwise burn and validate the handle."""
+    with _CAPABILITY_REGISTRY_LOCK:
+        try:
+            state = _CAPABILITY_REGISTRY.get(capability)
+        except (TypeError, AttributeError):
+            return None
+        if state is None:
+            return None
+        if state["consumed"]:
+            return False
+        # Every attempted consumption burns the capability, including a failed
+        # binding check, so it can never be replayed against another candidate.
+        state["consumed"] = True
+    try:
+        _verify_held_lock(state)
+        if expected_active is not None:
+            raise RuntimeError("genesis requires expected active to be none")
+        if run_id != state["run_id"]:
+            raise RuntimeError("genesis promotion run binding mismatch")
+        if candidate_path.resolve() != state["candidate_path"]:
+            raise RuntimeError("genesis candidate binding mismatch")
+        if (state["canonical_root"] / "selection.json").exists():
+            raise RuntimeError("genesis requires absent canonical selection")
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def sha256_file(path: Path) -> str:
@@ -174,7 +319,6 @@ def promote(
     canonical_root: Path,
     expected_active: str | None,
     comparison_path: Path | None = None,
-    evaluator: Callable[[Path, Path], dict[str, Any]] = evaluate,
 ) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     canonical_root = canonical_root.resolve()
@@ -184,25 +328,10 @@ def promote(
     if not database.is_file() or not manifest.is_file():
         raise PromotionError("required staging database or manifest is missing")
 
-    eligibility = evaluator(run_dir, comparison_path)
-    if eligibility.get("promotion_eligible") is not True or eligibility.get("result") != "PASS":
-        raise PromotionError("existing promotion validator rejected the staging run")
-    manifest_value = load_object(manifest)
-    database_hash = sha256_file(database)
-    if manifest_value.get("sha256") != database_hash:
-        raise PromotionError("staging manifest/database hash mismatch")
-    manifest_hash = sha256_file(manifest)
-    snapshot_id = database_hash
-    new_pointer = pointer_for(snapshot_id, database_hash, manifest_hash)
-
+    canonical_root_preexisted = canonical_root.exists()
     canonical_root.mkdir(parents=True, exist_ok=True)
-    lock_path = canonical_root / ".promotion.lock"
+    capability = _acquire_genesis_capability(canonical_root / ".promotion.lock", run_dir)
     try:
-        lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise PromotionError("promotion authority is already held") from exc
-    try:
-        os.close(lock_descriptor)
         selection_path = canonical_root / "selection.json"
         obsolete_paths = (canonical_root / "active.json", canonical_root / "rollback.json")
         if any(path.exists() for path in obsolete_paths):
@@ -219,12 +348,32 @@ def promote(
             raise PromotionError(
                 f"stale expected-active authority: expected {expected_active!r}, found {current_id!r}"
             )
+        if current is None:
+            eligibility = _evaluate_genesis(
+                run_dir,
+                comparison_path,
+                capability,
+                capability.run_id,
+                expected_active,
+            )
+        else:
+            eligibility = evaluate(run_dir, comparison_path)
+        if eligibility.get("promotion_eligible") is not True or eligibility.get("result") != "PASS":
+            raise PromotionError("existing promotion validator rejected the staging run")
+        manifest_value = load_object(manifest)
+        database_hash = sha256_file(database)
+        if manifest_value.get("sha256") != database_hash:
+            raise PromotionError("staging manifest/database hash mismatch")
+        manifest_hash = sha256_file(manifest)
+        snapshot_id = database_hash
+        new_pointer = pointer_for(snapshot_id, database_hash, manifest_hash)
         if current_id == snapshot_id:
             raise PromotionError("target snapshot is already active")
 
-        comparison = load_object(comparison_path)
-        if current is not None and comparison.get("baseline_sha256") != current["database_sha256"]:
-            raise PromotionError("comparison baseline does not match the active snapshot")
+        if current is not None:
+            comparison = load_object(comparison_path)
+            if comparison.get("baseline_sha256") != current["database_sha256"]:
+                raise PromotionError("comparison baseline does not match the active snapshot")
 
         install_snapshot(canonical_root, database, manifest, new_pointer)
         next_selection = selection_for(new_pointer, current)
@@ -236,7 +385,12 @@ def promote(
             "selection": str(selection_path),
         }
     finally:
-        lock_path.unlink(missing_ok=True)
+        capability.close()
+        if not canonical_root_preexisted:
+            try:
+                canonical_root.rmdir()
+            except OSError:
+                pass
 
 
 def parse_args() -> argparse.Namespace:

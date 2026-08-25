@@ -25,9 +25,9 @@ from procurement_identity_resolution import (
     extract_procurement_status,
     resolve_identity,
 )
+from sirup_snapshot_resolver import resolve_active_sirup_database
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SIRUP_DB = ROOT.parent / "mia-automation" / "sirup_2026.duckdb"
 DEFAULT_OUTPUT = ROOT / "outputs" / "sirup_procurement_status_crosscheck.xlsx"
 DEFAULT_ROOTS = [
     ROOT,
@@ -394,6 +394,12 @@ def load_evidence(roots: list[Path], explicit_files: list[Path] | None = None, s
     return evidence, source_rows
 
 
+def resolve_sirup_db(path: str | None) -> Path:
+    if path:
+        return Path(path)
+    return resolve_active_sirup_database()
+
+
 def load_sirup(args: argparse.Namespace) -> tuple[pd.DataFrame, list[str]]:
     db_path = Path(args.sirup_db)
     if not db_path.exists():
@@ -714,7 +720,7 @@ def validate_output(output: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crosscheck selected SiRUP packages against local SPSE/LPSE/e-purchasing evidence exports.")
-    parser.add_argument("--sirup-db", default=str(DEFAULT_SIRUP_DB))
+    parser.add_argument("--sirup-db", default=None)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--year", type=int, default=2026)
     parser.add_argument("--keyword", default="")
@@ -730,6 +736,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    args.sirup_db = resolve_sirup_db(args.sirup_db)
     roots = [Path(root) for root in args.roots]
     sirup, sirup_fields = load_sirup(args)
     explicit_files = [Path(path) for path in args.evidence_files]

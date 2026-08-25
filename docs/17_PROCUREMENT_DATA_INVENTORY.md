@@ -118,6 +118,8 @@ Main identifiers: RUP ID, package/reference ID, KLDI ID, satker ID, KLDI name, w
 
 Relevant columns: RUP ID, id_referensi/package reference, paket, pagu, satuanKerja, kldi, lokasi, metode, jenisPengadaan, sumberDana, idBulan, pemilihan, idKldi, idSatker.
 
+Semantic boundary: `id_referensi` is an upstream SiRUP field, but currently verified authoritative evidence does not establish its referenced entity, namespace, or cardinality. Repository fields named `package_id` or `sirup_package_id` that are projected from `id_referensi` are legacy local aliases only; they must not be interpreted as LPSE/SPSE Kode Paket, LPSE Kode RUP, or procurement realization identity. Numeric equality across these namespaces is inadmissible as identity evidence, and any cross-system mapping requires an explicit authoritative binding. Existing output-contract names must not be silently renamed as part of this clarification.
+
 Typical limitations: planning-only; does not prove tender, award, contract, delivery, payment, or completion. Package names may change downstream.
 
 Potential legal/licensing concerns: use as public procurement transparency data; respect LKPP terms, robots.txt, rate limits, and official access patterns.

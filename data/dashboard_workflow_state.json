@@ -7,7 +7,10 @@
       "approved": true,
       "readyToSend": true,
       "sent": false,
-      "updatedAt": "2026-07-08T08:14:29.455Z"
+      "updatedAt": "2026-08-10T01:58:07.997Z",
+      "version": 0,
+      "approvedBy": "local-operator",
+      "approvedAt": "2026-08-10T01:58:05.824Z"
     },
     "salesNotes": {
       "contactPerson": "",
@@ -15,12 +18,16 @@
       "customerInterest": "",
       "requestedDocuments": "",
       "internalNotes": "",
-      "savedAt": null
+      "savedAt": null,
+      "updatedAt": null,
+      "updatedBy": null
     },
     "nextAction": {
       "action": "Call Again",
       "note": "",
-      "savedAt": null
+      "savedAt": null,
+      "updatedAt": null,
+      "updatedBy": null
     },
     "timeline": {
       "completedEvents": [
@@ -30,7 +37,8 @@
         "EMAIL_SENT": "2026-07-08T03:05:01.227Z"
       },
       "currentStage": "Email Sent",
-      "updatedAt": "2026-07-08T03:05:01.227Z"
+      "updatedAt": "2026-07-08T03:05:01.227Z",
+      "updatedBy": null
     },
     "emailSend": {
       "sentAt": "2026-07-08T03:05:01.227Z",
@@ -39,19 +47,23 @@
       "actualRecipient": "mock:no-real-recipient",
       "subject": "Informasi Rekomendasi Produk Berdasarkan Rencana Pengadaan SiRUP",
       "status": "sent",
+      "idempotencyKey": null,
       "providerMessageId": "mock-1783479901227",
       "error": null
     }
   },
   "693974-pelaksanaan-cipta-karya-wilayah-iii-provinsi-sumatera-utara-6120x2": {
     "draft": {
-      "text": "Yth. Bapak/Ibu Tim Pengadaan 693974/PELAKSANAAN CIPTA KARYA WILAYAH III PROVINSI SUMATERA UTARA — Kementerian Pekerjaan Umum,\n\nBerdasarkan informasi rencana pengadaan yang dipublikasikan secara resmi melalui SiRUP, kami mencatat adanya indikasi area kebutuhan pada kategori IT_HARDWARE. Ringkasan awal ini berasal dari 3 paket rencana dengan total pagu Rp 44.320.000.\n\nSebagai referensi awal, contoh nama paket yang tercatat antara lain: ATK dan Komputer Supplies [67079076]; ATK dan Komputer Supplies [67079075]; ATK dan Komputer Supplies [67068771].\n\nApabila berkenan, kami dapat menyampaikan referensi produk atau klarifikasi awal yang relevan dengan kategori tersebut untuk membantu proses penelaahan internal Bapak/Ibu.\n\nCatatan: informasi SiRUP merupakan informasi perencanaan pengadaan. Draft ini tidak menyimpulkan status tender, ketersediaan anggaran final, atau keputusan pengadaan.\n\nHormat kami,\nTim NovaNusa",
+      "text": "Yth. Bapak/Ibu,\n\nPerkenalkan, saya tim sales dari perusahaan kami. Kami menyediakan produk dan layanan terkait IT_HARDWARE untuk mendukung kebutuhan IT_HARDWARE bagi berbagai institusi dan organisasi.\n\nKami menghubungi Bapak/Ibu terkait rencana pengadaan IT_HARDWARE oleh 693974/PELAKSANAAN CIPTA KARYA WILAYAH III PROVINSI SUMATERA UTARA — Kementerian Pekerjaan Umum untuk tahun 2026, sebagaimana dipublikasikan melalui SiRUP sebagai data perencanaan pengadaan.\n\nTerkait kebutuhan tersebut, kami dapat menyediakan informasi produk, spesifikasi teknis, katalog, maupun referensi implementasi yang relevan sebagai bahan pertimbangan.\n\nApabila Bapak/Ibu berkenan, apakah kami dapat mengetahui PIC yang tepat untuk kebutuhan ini, atau menjadwalkan percakapan singkat melalui telepon pada waktu yang sesuai?\n\nTerima kasih atas waktu dan perhatian Bapak/Ibu.\n\nHormat kami,\n\ntim sales\n\nperusahaan kami",
       "status": "READY_TO_SEND",
       "reviewStatus": "Ready to Send",
       "approved": true,
       "readyToSend": true,
       "sent": false,
-      "updatedAt": "2026-07-08T08:18:34.326Z"
+      "updatedAt": "2026-08-10T05:12:20.134Z",
+      "version": 1,
+      "approvedBy": "local-operator",
+      "approvedAt": "2026-08-10T05:12:12.124Z"
     },
     "salesNotes": {
       "contactPerson": "",
@@ -59,18 +71,23 @@
       "customerInterest": "",
       "requestedDocuments": "",
       "internalNotes": "",
-      "savedAt": null
+      "savedAt": null,
+      "updatedAt": null,
+      "updatedBy": null
     },
     "nextAction": {
       "action": "Call Again",
       "note": "",
-      "savedAt": null
+      "savedAt": null,
+      "updatedAt": null,
+      "updatedBy": null
     },
     "timeline": {
       "completedEvents": [],
       "eventTimestamps": {},
       "currentStage": "No CRM event yet",
-      "updatedAt": null
+      "updatedAt": null,
+      "updatedBy": null
     },
     "emailSend": {
       "sentAt": null,
@@ -79,6 +96,7 @@
       "actualRecipient": "",
       "subject": "",
       "status": "not_sent",
+      "idempotencyKey": null,
       "providerMessageId": null,
       "error": null
     }

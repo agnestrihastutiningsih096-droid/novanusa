@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import time
@@ -35,10 +36,14 @@ DEFAULT_OUT_DIR = ROOT / "data" / "reference" / "lpse"
 DEFAULT_OUTPUT_DIR = ROOT / "outputs" / "reference"
 DEFAULT_CSV = DEFAULT_OUT_DIR / "lpse_registry.csv"
 DEFAULT_JSON = DEFAULT_OUT_DIR / "lpse_registry.json"
+DEFAULT_METADATA = DEFAULT_OUT_DIR / "lpse_registry.metadata.json"
 DEFAULT_QUALITY_JSON = DEFAULT_OUTPUT_DIR / "lpse_registry_quality_report.json"
 DEFAULT_QUALITY_XLSX = DEFAULT_OUTPUT_DIR / "lpse_registry_quality_report.xlsx"
 DEFAULT_SOURCE_URL = "https://eproc.lkpp.go.id/lpse/index"
 DEFAULT_RAW_DIR = DEFAULT_OUT_DIR / "raw"
+
+REGISTRY_ARTIFACT_ID = "novanusa:lpse-registry:csv"
+REGISTRY_HASH_ALGORITHM = "sha256"
 
 PROVINCES = [
     "Aceh",
@@ -122,6 +127,30 @@ class RegistryRow:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def build_registry_artifact_metadata(csv_path: Path) -> dict[str, str]:
+    """Bind routing provenance to the exact canonical CSV bytes collectors read."""
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Canonical LPSE registry artifact is missing: {csv_path}")
+    digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    return {
+        "registry_artifact_id": REGISTRY_ARTIFACT_ID,
+        "registry_artifact_hash": digest,
+        "registry_version": f"{REGISTRY_HASH_ALGORITHM}:{digest}",
+    }
+
+
+def load_registry_artifact_metadata(csv_path: Path, metadata_path: Path) -> dict[str, str]:
+    """Load metadata only when it is complete and matches the canonical CSV."""
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Canonical LPSE registry metadata is missing or invalid: {metadata_path}") from exc
+    expected = build_registry_artifact_metadata(csv_path)
+    if not isinstance(metadata, dict) or metadata != expected:
+        raise ValueError("Canonical LPSE registry metadata does not match the registry artifact")
+    return metadata
 
 
 def clean_text(value: str | None) -> str | None:
@@ -590,9 +619,10 @@ def build_quality_report(df: pd.DataFrame, source_url: str, checked_at: str) -> 
     return quality, report
 
 
-def write_outputs(df: pd.DataFrame, summary: dict, quality_report: dict, csv_path: Path, json_path: Path, summary_json_path: Path, xlsx_path: Path, quality_json_path: Path, quality_xlsx_path: Path) -> None:
+def write_outputs(df: pd.DataFrame, summary: dict, quality_report: dict, csv_path: Path, json_path: Path, metadata_path: Path, summary_json_path: Path, xlsx_path: Path, quality_json_path: Path, quality_xlsx_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
     summary_json_path.parent.mkdir(parents=True, exist_ok=True)
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     quality_json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -600,6 +630,8 @@ def write_outputs(df: pd.DataFrame, summary: dict, quality_report: dict, csv_pat
 
     df.to_csv(csv_path, index=False, quoting=csv.QUOTE_MINIMAL, encoding="utf-8")
     df.to_json(json_path, orient="records", force_ascii=False, indent=2)
+    metadata = build_registry_artifact_metadata(csv_path)
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     summary_json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     quality_json_path.write_text(json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8")
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
@@ -676,6 +708,7 @@ def main() -> int:
         quality_report=quality_report,
         csv_path=args.output_dir / "lpse_registry.csv",
         json_path=args.output_dir / "lpse_registry.json",
+        metadata_path=args.output_dir / "lpse_registry.metadata.json",
         summary_json_path=args.summary_dir / "lpse_registry_summary.json",
         xlsx_path=args.summary_dir / "lpse_registry_summary.xlsx",
         quality_json_path=args.summary_dir / "lpse_registry_quality_report.json",
