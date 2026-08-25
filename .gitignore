@@ -36,3 +36,15 @@ data/dashboard_communication_outcomes.json
 
 # Local snapshot staging artifacts
 data/staging/
+# Command Code
+.commandcode/
+
+# Data evidence (raw & parsed scraping data)
+data/evidence/
+
+# Generated outputs
+outputs/
+
+# Runtime contact data
+data/dashboard_contact_overrides.json
+data/dashboard_contact_verifications.json
